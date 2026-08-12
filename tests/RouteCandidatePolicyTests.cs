@@ -16,6 +16,18 @@ internal static class RouteCandidatePolicyTests
         Run("same destination on two Zonelines is not ambiguous", SameNameIsNotAmbiguous);
         Run("RemoveParty route is rejected", RemovePartyRejected);
         Run("ranking is deterministic regardless enumeration order", RankingDeterministic);
+        Run("complete path far from the crossing is not proof of a valid crossing", CompleteFarFromCrossingRejected);
+        Run("complete path close to the crossing is accepted", CompleteNearCrossingAccepted);
+        Run("route failure message is generic only when no candidate was ever verified", RouteFailureMessageNoCandidates);
+        Run("route failure message names the crossing when candidates existed but none worked", RouteFailureMessageWithCandidates);
+        Run("blank reason does not produce empty parentheses", RouteFailureMessageBlankReason);
+        Run("blank destination falls back to a neutral noun", RouteFailureMessageBlankDestination);
+        Run("rejected crossings alone are not an accepted candidate", RejectedCandidatesAreNotAccepted);
+        Run("an accepted crossing is an accepted candidate", AcceptedCandidateIsDetected);
+        Run("non-crossing execution failure does not claim a crossing", TravelExecutionFailureWording);
+        Run("travel execution failure with blank reason has no empty parentheses", TravelExecutionBlankReason);
+        Run("no accepted route overrides any site classification", NoAcceptedRouteOverridesSiteKind);
+        Run("an unclassified site with an accepted route degrades to travel execution", UnclassifiedSiteDegrades);
         Console.WriteLine("PASS: " + _passed + " route-candidate policy tests.");
         return 0;
     }
@@ -109,6 +121,123 @@ internal static class RouteCandidatePolicyTests
             Require(forward[i].Candidate.StableKey == reverse[i].Candidate.StableKey, "rank order changed at index " + i);
         Require(forward[0].Candidate.StableKey == "a", "shorter complete route should rank first");
         Require(forward[2].Candidate.StableKey == "c", "partial route should rank behind complete routes");
+    }
+
+    // Reproduces the verified Brake -> Azure field case: NavMesh.CalculatePath reports Complete all the way
+    // to a sampled approach point, but that approach is ~42m from the real crossing. A Complete path is
+    // necessary but not sufficient proof of a valid crossing -- it must also land near the crossing.
+    private static void CompleteFarFromCrossingRejected()
+    {
+        RouteCandidatePolicy.Candidate candidate = Candidate("azure-bad-approach", true, RouteCandidatePolicy.PathKind.Complete,
+            6, 42f, 0f, 41.9f, 45f);
+        RouteCandidatePolicy.Evaluation evaluation = RouteCandidatePolicy.Evaluate(candidate);
+        Require(!evaluation.Accepted, "a Complete path ending 41.9m from the crossing must not be accepted");
+        Require(evaluation.Reason.IndexOf("too far", StringComparison.OrdinalIgnoreCase) >= 0, evaluation.Reason);
+    }
+
+    private static void CompleteNearCrossingAccepted()
+    {
+        RouteCandidatePolicy.Candidate candidate = Candidate("azure-good-approach", true, RouteCandidatePolicy.PathKind.Complete,
+            4, 42f, 0f, 5.3f, 40f);
+        RouteCandidatePolicy.Evaluation evaluation = RouteCandidatePolicy.Evaluate(candidate);
+        Require(evaluation.Accepted && evaluation.Acceptance == RouteCandidatePolicy.AcceptanceKind.Complete,
+            "a Complete path ending 5.3m from the crossing must be accepted");
+    }
+
+    private static void RouteFailureMessageNoCandidates()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Azure", RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute, "no walkable route to Azure.");
+        Require(message == "no walkable route to Azure.", "no verified candidate ever existed: " + message);
+    }
+
+    private static void RouteFailureMessageWithCandidates()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Azure", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed, "the boundary approach did not produce a real zone transition");
+        Require(message.IndexOf("could not reach a valid crossing approach to Azure", StringComparison.OrdinalIgnoreCase) >= 0,
+            "message should name the crossing instead of a generic no-route phrase: " + message);
+        Require(message.IndexOf("no walkable route", StringComparison.OrdinalIgnoreCase) < 0,
+            "message must not fall back to the generic no-route phrasing when a candidate was verified: " + message);
+    }
+
+    private static void RouteFailureMessageBlankReason()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Azure", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed, "   ");
+        Require(message.IndexOf("()", StringComparison.Ordinal) < 0, "blank reason must not emit empty parentheses: " + message);
+        Require(message == "could not reach a valid crossing approach to Azure.", message);
+    }
+
+    private static void RouteFailureMessageBlankDestination()
+    {
+        Require(RouteCandidatePolicy.DescribeRouteFailure(null, RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute, null) == "no walkable route to the destination.",
+            "null destination should fall back to a neutral noun");
+        Require(RouteCandidatePolicy.DescribeRouteFailure("  ", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed, null) == "could not reach a valid crossing approach to the destination.",
+            "blank destination should fall back to a neutral noun");
+    }
+
+    // "An accepted candidate existed" must mean acceptance policy passed -- not that a Zoneline or a raw
+    // sampled point was found. RankAccepted is the same surface the planner uses to build leg options, so
+    // an empty result is exactly the "no walkable route" case.
+    private static void RejectedCandidatesAreNotAccepted()
+    {
+        RouteCandidatePolicy.Candidate unsampled = Candidate("raw-crossing", false, RouteCandidatePolicy.PathKind.Invalid, 0, 30f, 30f, 30f, 999f);
+        RouteCandidatePolicy.Candidate farApproach = Candidate("far-approach", true, RouteCandidatePolicy.PathKind.Complete, 6, 42f, 0f, 41.9f, 45f);
+        List<RouteCandidatePolicy.Evaluation> accepted =
+            RouteCandidatePolicy.RankAccepted(new List<RouteCandidatePolicy.Candidate> { unsampled, farApproach });
+        Require(accepted.Count == 0, "rejected crossings must not count as verified approaches");
+        Require(RouteCandidatePolicy.DescribeRouteFailure("Azure", RouteCandidatePolicy.ResolveFailureKind(accepted.Count > 0, RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed), "route validation stopped making useful progress")
+            == "no walkable route to Azure.", "no accepted candidate must keep the generic wording");
+    }
+
+    private static void AcceptedCandidateIsDetected()
+    {
+        RouteCandidatePolicy.Candidate good = Candidate("good-approach", true, RouteCandidatePolicy.PathKind.Complete, 4, 20f, 0f, 1f, 22f);
+        List<RouteCandidatePolicy.Evaluation> accepted =
+            RouteCandidatePolicy.RankAccepted(new List<RouteCandidatePolicy.Candidate> { good });
+        Require(accepted.Count == 1, "an accepted approach should be counted");
+        Require(RouteCandidatePolicy.DescribeRouteFailure("Azure", RouteCandidatePolicy.ResolveFailureKind(accepted.Count > 0, RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed), "the boundary approach did not produce a real zone transition")
+            .IndexOf("could not reach a valid crossing approach to Azure", StringComparison.OrdinalIgnoreCase) >= 0,
+            "an exhausted accepted candidate must use the crossing-approach wording");
+    }
+
+    // FailRoute is a shared funnel: regrouping, player-follow loss, and native path invalidation all arrive
+    // there with an accepted route in hand. Those must not claim the crossing could not be reached.
+    private static void TravelExecutionFailureWording()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Azure",
+            RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed, "could not hold the leader for regrouping");
+        Require(message == "travel to Azure failed (could not hold the leader for regrouping).", message);
+        Require(message.IndexOf("crossing", StringComparison.OrdinalIgnoreCase) < 0,
+            "a non-crossing failure must not mention a crossing: " + message);
+        Require(message.IndexOf("no walkable route", StringComparison.OrdinalIgnoreCase) < 0,
+            "an accepted route must not report as undiscoverable: " + message);
+    }
+
+    private static void TravelExecutionBlankReason()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Azure",
+            RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed, null);
+        Require(message == "travel to Azure failed.", message);
+        Require(message.IndexOf("()", StringComparison.Ordinal) < 0, "blank reason must not emit empty parentheses: " + message);
+    }
+
+    private static void NoAcceptedRouteOverridesSiteKind()
+    {
+        Require(RouteCandidatePolicy.ResolveFailureKind(false, RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed)
+            == RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute,
+            "without an accepted route a crossing claim must not survive");
+        Require(RouteCandidatePolicy.ResolveFailureKind(false, RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed)
+            == RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute,
+            "without an accepted route a travel claim must not survive");
+    }
+
+    private static void UnclassifiedSiteDegrades()
+    {
+        Require(RouteCandidatePolicy.ResolveFailureKind(true, RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute)
+            == RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed,
+            "an accepted route with no specific site claim should default to travel execution");
+        Require(RouteCandidatePolicy.ResolveFailureKind(true, RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed)
+            == RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed,
+            "an explicit crossing site claim should be preserved");
     }
 
     private static RouteCandidatePolicy.Candidate Candidate(string key, bool sampled, RouteCandidatePolicy.PathKind path,
