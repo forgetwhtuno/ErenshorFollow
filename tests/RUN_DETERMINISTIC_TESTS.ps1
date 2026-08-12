@@ -46,4 +46,9 @@ Invoke-StandaloneSuite "FollowRebindPolicyTests" @(
     (Join-Path $scriptRoot "FollowRebindPolicyTests.cs")
 ) $csc
 
+Invoke-StandaloneSuite "RouteCandidatePolicyTests" @(
+    (Join-Path $repoRoot "src\RouteCandidatePolicy.cs"),
+    (Join-Path $scriptRoot "RouteCandidatePolicyTests.cs")
+) $csc
+
 Write-Host "Erenshor Follow deterministic suites: ALL PASS" -ForegroundColor Green

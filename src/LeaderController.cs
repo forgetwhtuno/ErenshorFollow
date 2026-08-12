@@ -71,6 +71,15 @@ namespace ErenshorFollow
         private static int _zoneRouteIndex;
         private static Vector3 _zoneApproach;
         private static RouteCandidatePolicy.Evaluation _zoneEvaluation;
+        // Failure context for the current zone leg. "Accepted candidate" means the planner produced at
+        // least one option that passed RouteCandidatePolicy acceptance -- not merely that a Zoneline or a
+        // raw sampled point existed. Both fields are reset by RebuildZoneOptions, which is the only entry
+        // point for a leg start or an explicit resume, so they cannot leak from a previous leg or
+        // expedition. They are deliberately NOT cleared by teardown: FailRoute only queues RouteFailed,
+        // and ExpeditionCoordinator reads this context on a later tick, after teardown may have run.
+        private static bool _legHadAcceptedCandidate;
+        private static string _legRouteFailureReason;
+        private static RouteCandidatePolicy.RouteFailureKind _legRouteFailureKind;
         private static bool _nativeProofPending;
         private static float _nativeProofSince;
         private static Vector3 _nativeProofStartPosition;
@@ -190,8 +199,15 @@ namespace ErenshorFollow
             InitializeZoneLeg(leader, destination, true);
             if (!RebuildZoneOptions() || !ApplyTravelOrder())
             {
+                // RebuildZoneOptions has already recorded whether acceptance produced any candidate, so
+                // startup can distinguish "nothing was ever verified" from "verified approaches existed but
+                // none could be ordered" without inspecting runtime objects after Stop(). Failing to assign
+                // a travel order is not a crossing claim, so it stays TravelExecutionFailed.
+                RouteCandidatePolicy.RouteFailureKind startKind = RouteCandidatePolicy.ResolveFailureKind(
+                    _legHadAcceptedCandidate, RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                 Stop(null);
-                failure = "No walkable route to " + destination.CanonicalName + ".";
+                failure = SentenceCase(RouteCandidatePolicy.DescribeRouteFailure(
+                    destination.CanonicalName, startKind, "no verified approach could be ordered"));
                 return false;
             }
             return true;
@@ -278,7 +294,7 @@ namespace ErenshorFollow
             }
             if (_monster == null && _expeditionDestination != null && !CurrentCrossingUsable())
             {
-                FailRoute("the selected crossing disappeared");
+                FailRoute("the selected crossing disappeared", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed);
                 return;
             }
             if (_destination == null && _monster == null)
@@ -296,7 +312,7 @@ namespace ErenshorFollow
                     if (FollowController.LastStopReason == FollowController.StopReason.ManualMovement)
                         Report(LegEvent.FollowManualOverride);
                     else
-                        FailRoute("player follow could not keep a route to the leader");
+                        FailRoute("player follow could not keep a route to the leader", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                     return;
                 }
                 Stop("Leader travel stopped because following was cancelled or no route was available.");
@@ -354,7 +370,7 @@ namespace ErenshorFollow
                 Report(LegEvent.CombatCleared);
                 if (!BeginRegroupHold(true))
                 {
-                    FailRoute("could not enter the post-combat regroup hold");
+                    FailRoute("could not enter the post-combat regroup hold", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                     return;
                 }
                 return;
@@ -365,7 +381,7 @@ namespace ErenshorFollow
             {
                 if (!BeginRegroupHold(false))
                 {
-                    FailRoute("could not hold the leader for regrouping");
+                    FailRoute("could not hold the leader for regrouping", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                     return;
                 }
                 Report(LegEvent.WaitingForPlayer);
@@ -394,7 +410,7 @@ namespace ErenshorFollow
                 _regroupAfterCombat = false;
                 if (!ApplyTravelOrder())
                 {
-                    FailRoute("could not reapply the selected route after regrouping");
+                    FailRoute("could not reapply the selected route after regrouping", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                     return;
                 }
                 Report(LegEvent.PlayerRegrouped);
@@ -419,14 +435,14 @@ namespace ErenshorFollow
 
             if (!ValidateLeaderRoute())
             {
-                FailRoute("route validation stopped making useful progress");
+                FailRoute("route validation stopped making useful progress", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
                 return;
             }
             RefreshNativeNavigation(false, Vector3.zero);
 
             NavMeshAgent nav = _leader.GetComponent<NavMeshAgent>();
             if (nav != null && nav.isOnNavMesh && nav.hasPath && nav.pathStatus == NavMeshPathStatus.PathInvalid)
-                FailRoute("the native NavMeshAgent reported PathInvalid");
+                FailRoute("the native NavMeshAgent reported PathInvalid", RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed);
         }
 
         private static bool BeginRegroupHold(bool afterCombat)
@@ -441,13 +457,44 @@ namespace ErenshorFollow
             return true;
         }
 
-        private static void FailRoute(string reason)
+        // siteKind is supplied by the failure site, never inferred from the reason text. Callers that are not
+        // specifically about reaching the selected crossing must pass TravelExecutionFailed.
+        private static void FailRoute(string reason, RouteCandidatePolicy.RouteFailureKind siteKind)
         {
             if (_expeditionOwned && _monster == null && TryNextZoneOption(reason)) return;
             string routeTarget = _monster == null ? _destinationName : _monsterName;
             Verbose("all verified route candidates failed for " + routeTarget + (string.IsNullOrWhiteSpace(reason) ? string.Empty : ": " + reason));
+            // Capture the terminal reason and category now: RouteFailed is only queued here, and
+            // ExpeditionCoordinator reads this context on a later tick once teardown may already have run.
+            _legRouteFailureReason = reason;
+            _legRouteFailureKind = RouteCandidatePolicy.ResolveFailureKind(_legHadAcceptedCandidate, siteKind);
             if (_expeditionOwned) { Report(LegEvent.RouteFailed); return; }
-            Stop("No walkable route to " + routeTarget + ".");
+            Stop(SentenceCase(RouteCandidatePolicy.DescribeRouteFailure(routeTarget, _legRouteFailureKind, reason)));
+        }
+
+        // Semantic snapshot of why the current leg's routing ended, for the expedition owner to phrase.
+        internal struct RouteFailureContext
+        {
+            internal readonly RouteCandidatePolicy.RouteFailureKind Kind;
+            internal readonly string Reason;
+            internal RouteFailureContext(RouteCandidatePolicy.RouteFailureKind kind, string reason)
+            {
+                Kind = kind;
+                Reason = reason;
+            }
+        }
+
+        internal static RouteFailureContext LastRouteFailure()
+        {
+            return new RouteFailureContext(_legRouteFailureKind, _legRouteFailureReason);
+        }
+
+        // The pure helper returns a clause so it can be embedded ("Expedition ended: <clause>"). Standalone
+        // chat lines need it as a sentence.
+        private static string SentenceCase(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return value;
+            return char.ToUpperInvariant(value[0]) + value.Substring(1);
         }
 
         internal static void DrainEvents(List<LegEvent> into)
@@ -506,7 +553,11 @@ namespace ErenshorFollow
             // position rather than replaying a stale approach captured before the pause.
             if (!RebuildZoneOptions() || !ApplyTravelOrder())
             {
-                failure = "No walkable route to " + _destinationName + ".";
+                failure = SentenceCase(RouteCandidatePolicy.DescribeRouteFailure(
+                    _destinationName,
+                    RouteCandidatePolicy.ResolveFailureKind(
+                        _legHadAcceptedCandidate, RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed),
+                    "no verified approach could be ordered"));
                 return false;
             }
             return true;
@@ -627,6 +678,9 @@ namespace ErenshorFollow
         {
             ZoneRouteOptions.Clear();
             _zoneRouteIndex = -1;
+            _legHadAcceptedCandidate = false;
+            _legRouteFailureReason = null;
+            _legRouteFailureKind = RouteCandidatePolicy.RouteFailureKind.NoAcceptedRoute;
             _destination = null;
             _zoneEvaluation = null;
             _nativeProofPending = false;
@@ -639,6 +693,9 @@ namespace ErenshorFollow
             if (liveCrossings.Count == 0) return false;
             LocalZoneRoutePlanner.Plan plan = LocalZoneRoutePlanner.Build(_leader.transform.position, liveCrossings);
             ZoneRouteOptions.AddRange(plan.Options);
+            // plan.Options carries only options that passed RouteCandidatePolicy acceptance, so a non-empty
+            // list is the authoritative "a verified crossing approach existed" signal for this leg.
+            _legHadAcceptedCandidate = ZoneRouteOptions.Count > 0;
             Verbose("built " + ZoneRouteOptions.Count + " accepted approach candidate(s) across " + liveCrossings.Count +
                 " crossing(s) for " + _expeditionDestination.CanonicalName);
             return SelectZoneOption(0);
@@ -760,7 +817,7 @@ namespace ErenshorFollow
             if (Time.time - _nativeProofSince >= NativeProofSeconds)
             {
                 _nativeProofPending = false;
-                FailRoute("native navigation made no meaningful progress during the bounded proof window");
+                FailRoute("native navigation made no meaningful progress during the bounded proof window", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed);
                 return true;
             }
             RefreshNativeNavigation(false, Vector3.zero);
@@ -829,7 +886,7 @@ namespace ErenshorFollow
                 return true;
             }
             _boundaryGraceSince = 0f;
-            FailRoute("the boundary approach did not produce a real zone transition");
+            FailRoute("the boundary approach did not produce a real zone transition", RouteCandidatePolicy.RouteFailureKind.CrossingApproachFailed);
             return true;
         }
 

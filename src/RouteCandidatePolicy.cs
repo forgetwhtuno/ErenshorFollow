@@ -195,6 +195,50 @@ namespace ErenshorFollow
             return Math.Max(PartialMinimumProgressFloor, Math.Min(PartialMinimumProgressCeiling, proportional));
         }
 
+        // Why a travel leg stopped, as a semantic fact supplied by the failure site itself. Never inferred
+        // by parsing a reason string: the same route-failure funnel carries crossing-specific failures and
+        // ordinary travel-execution failures (regrouping, player follow, native path invalidation), and
+        // those must not all claim the crossing could not be reached.
+        internal enum RouteFailureKind
+        {
+            NoAcceptedRoute,
+            CrossingApproachFailed,
+            TravelExecutionFailed
+        }
+
+        // Acceptance is authoritative: if no approach ever passed RouteCandidatePolicy this leg, the failure
+        // is NoAcceptedRoute regardless of what the call site believed. A site that has an accepted route but
+        // no specific crossing claim degrades to TravelExecutionFailed rather than overstating.
+        internal static RouteFailureKind ResolveFailureKind(bool hadAcceptedCandidate, RouteFailureKind siteKind)
+        {
+            if (!hadAcceptedCandidate) return RouteFailureKind.NoAcceptedRoute;
+            return siteKind == RouteFailureKind.NoAcceptedRoute ? RouteFailureKind.TravelExecutionFailed : siteKind;
+        }
+
+        // A terminal expedition failure must not say "no walkable route" when a verified, initially-complete
+        // NavMesh path to a crossing approach genuinely existed -- that phrasing implies route discovery
+        // itself failed. Equally, it must not claim a crossing could not be reached when travel actually
+        // failed for an unrelated reason. Kept Unity-free and pure so the wording is covered by
+        // deterministic tests rather than only exercised live.
+        internal static string DescribeRouteFailure(string destinationName, RouteFailureKind kind, string reason)
+        {
+            string target = string.IsNullOrWhiteSpace(destinationName) ? "the destination" : destinationName.Trim();
+            switch (kind)
+            {
+                case RouteFailureKind.CrossingApproachFailed:
+                    return "could not reach a valid crossing approach to " + target + FailureDetail(reason);
+                case RouteFailureKind.TravelExecutionFailed:
+                    return "travel to " + target + " failed" + FailureDetail(reason);
+                default:
+                    return "no walkable route to " + target + ".";
+            }
+        }
+
+        private static string FailureDetail(string reason)
+        {
+            return string.IsNullOrWhiteSpace(reason) ? "." : " (" + reason.Trim() + ").";
+        }
+
         private static int RankTier(AcceptanceKind kind)
         {
             switch (kind)

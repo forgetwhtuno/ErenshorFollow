@@ -372,7 +372,12 @@ namespace ErenshorFollow
                     break;
 
                 case LeaderController.LegEvent.RouteFailed:
-                    Fail(ExpeditionFailureReason.RouteFailed, "no walkable route to " + _session.DestinationName + ".", true);
+                    // The leg classified the failure at its own call site; without that, every route failure
+                    // read as "no walkable route", including cases where verified approaches existed and
+                    // cases where travel failed for reasons unrelated to the crossing.
+                    LeaderController.RouteFailureContext routeFailure = LeaderController.LastRouteFailure();
+                    Fail(ExpeditionFailureReason.RouteFailed, RouteCandidatePolicy.DescribeRouteFailure(
+                        _session.DestinationName, routeFailure.Kind, routeFailure.Reason), true);
                     break;
 
                 case LeaderController.LegEvent.LeaderInvalid:
