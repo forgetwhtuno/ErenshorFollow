@@ -10,9 +10,9 @@
     <Compile Include="src\*.cs" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Set Erenshor/BepInEx reference paths through a local MSBuild file, or run BUILD_AND_INSTALL.ps1
+    <!-- Set Erenshor/Lunaris reference paths through a local MSBuild file, or run BUILD_AND_INSTALL.ps1
          which resolves and compiles against the same set of assemblies automatically. -->
-    <Reference Include="BepInEx"><HintPath>refs\BepInEx.dll</HintPath></Reference>
+    <Reference Include="Lunaris"><HintPath>refs\Lunaris.dll</HintPath></Reference>
     <Reference Include="0Harmony"><HintPath>refs\0Harmony.dll</HintPath></Reference>
     <Reference Include="Assembly-CSharp"><HintPath>refs\Assembly-CSharp.dll</HintPath></Reference>
     <Reference Include="netstandard"><HintPath>refs\netstandard.dll</HintPath></Reference>

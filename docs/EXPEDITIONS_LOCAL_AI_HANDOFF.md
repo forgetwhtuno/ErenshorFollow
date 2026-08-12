@@ -177,7 +177,7 @@ ExpeditionDestinationResolver.cs
 ExpeditionIntegrationBridge.cs
 ```
 
-Do not create a second BepInEx movement plugin.
+Do not create a second movement plugin.
 
 ### ExpeditionCoordinator
 
@@ -677,11 +677,11 @@ After implementation:
 
 ```text
 build
-install to the intended local BepInEx profile
+install to <Erenshor>\plugins
 launch game
 run live tests
 exit
-inspect BepInEx log
+inspect Lunaris log
 git diff --check
 git diff
 git status

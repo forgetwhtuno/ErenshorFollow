@@ -1,6 +1,19 @@
-# Erenshor Follow 0.4.2
+# Erenshor Follow 0.5.0
 
-Erenshor Follow adds player movement assistance, Sim-led travel, and expedition coordination around existing Erenshor zone transitions. It is separate from Deep Sims and has a soft dependency only so Deep Sims can coexist with its follow movement patch.
+Erenshor Follow adds player movement assistance, Sim-led travel, and expedition coordination around existing Erenshor zone transitions. It is separate from Deep Sims and coexists with its embedded follow movement patch through reflection-based compatibility, not a loader-level dependency.
+
+## Status: native Lunaris migration candidate
+
+This version has been migrated off BepInEx 5 onto native Lunaris. This is a
+loader/config/logging/lifecycle migration only — no follow/lead/expedition/route logic, command
+grammar, or NavMesh/zoneline handling changed; every Harmony patch target has been re-verified
+against the currently installed `Assembly-CSharp.dll`, and the full existing deterministic test
+suite (`RUN_TESTS.ps1`) still passes unchanged. This pass also fixed a pre-existing hot-reload
+event leak in `CoopCompatibility`/`ExpeditionIntegrationBridge` (an unsubscribed
+`AppDomain.AssemblyLoad` handler). **Live in-game verification under Lunaris — including movement
+around real zone transitions and repeated unload/reload while Follow or an Expedition is active —
+has not yet been done.** A legacy BepInEx release remains available in this repository's Git
+history for anyone still on BepInEx.
 
 ## Commands
 
@@ -36,9 +49,16 @@ The mod provides a clickable Sim action menu and a travel status overlay. Clicki
 
 An expedition is a bounded multi-leg session: it records origin/current zone, requested destination, route progress, pause/resume/cancel state, verified arrival, and optional Campmaster handoff. The status overlay reports the current leg and exposes safe arrival actions. Failed or ambiguous route resolution is reported rather than silently teleporting.
 
+## Installation
+
+This is a **native Lunaris plugin** — BepInEx is no longer required for this version. Requires
+Lunaris installed in your Erenshor install. The compiled DLL is placed directly in
+`<Erenshor>\plugins\ErenshorFollow.dll`; Lunaris manages enable/disable.
+
 ## Build
 
-`BUILD_AND_INSTALL.ps1` builds the standalone BepInEx plugin against installed Erenshor assemblies. Install Deep Sims separately if social dialogue integration is desired.
+`BUILD_AND_INSTALL.ps1` builds the standalone native Lunaris plugin against installed Erenshor
+and Lunaris assemblies. Install Deep Sims separately if social dialogue integration is desired.
 
 ## Credits and Inspiration
 

@@ -1,4 +1,3 @@
-using BepInEx.Configuration;
 using HarmonyLib;
 using UnityEngine;
 
@@ -26,8 +25,8 @@ namespace ErenshorFollow
         private static ExpeditionState _lastExpeditionState;
         private static float _followWaitingSince = -1f;
 
-        private static ConfigEntry<float> _positionX;
-        private static ConfigEntry<float> _positionY;
+        private static FollowConfigEntry<float> _positionX;
+        private static FollowConfigEntry<float> _positionY;
         private static bool _positionConfigBound;
         private static bool _dragging;
         private static Vector2 _dragOffset;
@@ -323,29 +322,27 @@ namespace ErenshorFollow
 
         private static void EnsurePositionConfig()
         {
-            if (_positionConfigBound || ErenshorFollowPlugin.Instance == null) return;
+            if (_positionConfigBound || ErenshorFollowPlugin.Instance == null || ErenshorFollowPlugin.Instance.Settings == null) return;
             try
             {
-                // If a user previously adjusted the old offset knobs, use that old runtime position only
-                // as the first default for the new explicit X/Y keys. Fresh installs start upper-left,
-                // safely away from Erenshor's normal upper-right minimap.
-                float firstX = DefaultX;
-                float firstY = DefaultY;
-                if (Mathf.Abs(OffsetX) > 0.01f || Mathf.Abs(OffsetY) > 0.01f)
+                FollowSettings settings = ErenshorFollowPlugin.Instance.Settings;
+                _positionX = new FollowConfigEntry<float>(() => settings.OverlayPositionX, v => settings.OverlayPositionX = v);
+                _positionY = new FollowConfigEntry<float>(() => settings.OverlayPositionY, v => settings.OverlayPositionY = v);
+                _positionConfigBound = true;
+
+                // If a user previously adjusted the old offset knobs, and the native position config
+                // is still at its fresh default (never explicitly moved), migrate that old runtime
+                // position once. Fresh installs start upper-left, safely away from Erenshor's normal
+                // upper-right minimap.
+                bool stillAtFreshDefault = Mathf.Abs(_positionX.Value - DefaultX) < 0.01f && Mathf.Abs(_positionY.Value - DefaultY) < 0.01f;
+                if (stillAtFreshDefault && (Mathf.Abs(OffsetX) > 0.01f || Mathf.Abs(OffsetY) > 0.01f))
                 {
-                    firstX = Screen.width - Width - LegacyRightMargin - OffsetX;
-                    firstY = LegacyTopMargin + OffsetY;
+                    float firstX = Screen.width - Width - LegacyRightMargin - OffsetX;
+                    float firstY = LegacyTopMargin + OffsetY;
                     TravelOverlayPoint migrated = TravelOverlayLogic.ClampPosition(
                         firstX, firstY, Width, NormalHeight, Screen.width, Screen.height, ScreenMargin);
-                    firstX = migrated.X;
-                    firstY = migrated.Y;
+                    PersistPosition(migrated.X, migrated.Y);
                 }
-
-                _positionX = ErenshorFollowPlugin.Instance.Config.Bind("UI", "OverlayPositionX", firstX,
-                    "Travel panel X position in IMGUI screen coordinates. Drag the panel header to update it.");
-                _positionY = ErenshorFollowPlugin.Instance.Config.Bind("UI", "OverlayPositionY", firstY,
-                    "Travel panel Y position in IMGUI screen coordinates. Drag the panel header to update it.");
-                _positionConfigBound = true;
             }
             catch { }
         }
@@ -419,6 +416,7 @@ namespace ErenshorFollow
             {
                 _positionX.Value = x;
                 _positionY.Value = y;
+                if (ErenshorFollowPlugin.Instance != null) ErenshorFollowPlugin.Instance.SavePersistedSettings();
             }
             catch { }
         }
