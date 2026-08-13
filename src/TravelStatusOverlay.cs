@@ -29,6 +29,7 @@ namespace ErenshorFollow
         private static FollowConfigEntry<float> _positionY;
         private static bool _positionConfigBound;
         private static bool _dragging;
+        private static int _dragControlId;
         private static Vector2 _dragOffset;
         private static float _dragX;
         private static float _dragY;
@@ -374,6 +375,7 @@ namespace ErenshorFollow
             if (evt.type == EventType.MouseDown && evt.button == 0 && handle.Contains(evt.mousePosition))
             {
                 GUIUtility.hotControl = controlId;
+                _dragControlId = controlId;
                 _dragging = true;
                 _dragOffset = evt.mousePosition - new Vector2(_bounds.x, _bounds.y);
                 _dragX = _bounds.x;
@@ -405,8 +407,39 @@ namespace ErenshorFollow
                 GUIUtility.hotControl = 0;
                 if (_dragging) PersistPosition(_dragX, _dragY);
                 _dragging = false;
+                _dragControlId = 0;
                 evt.Use();
             }
+        }
+
+        internal static void CancelDragGesture()
+        {
+            if (_dragControlId != 0 && GUIUtility.hotControl == _dragControlId)
+                GUIUtility.hotControl = 0;
+            _dragControlId = 0;
+            _dragging = false;
+        }
+
+        internal static void ResetForLifecycle()
+        {
+            CancelDragGesture();
+            _bounds = new Rect();
+            _lastMode = OverlayMode.None;
+            _lastName = null;
+            _lastDestination = null;
+            _followWaitingSince = -1f;
+            _positionX = null;
+            _positionY = null;
+            _positionConfigBound = false;
+            _recentArrivalLeader = null;
+            _recentArrivalDestination = null;
+            _recentArrivalUntil = -1f;
+            _arrivalWasLive = false;
+            _campRequestQueued = false;
+            _boxStyle = null;
+            _titleStyle = null;
+            _stateStyle = null;
+            _buttonStyle = null;
         }
 
         private static void PersistPosition(float x, float y)

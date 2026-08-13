@@ -22,6 +22,8 @@ namespace ErenshorFollow
 
         private Harmony _harmony;
         internal FollowSettings Settings;
+        private int _pendingControlAction;
+        private FollowSuiteAuraProvider _auraProvider;
 
         private void Awake()
         {
@@ -39,6 +41,16 @@ namespace ErenshorFollow
             _harmony.PatchAll();
             DisableEmbeddedDeepSimsFollow();
             SceneManager.sceneLoaded += OnSceneLoaded;
+            try
+            {
+                _auraProvider = new FollowSuiteAuraProvider(this);
+                _auraProvider.Register();
+            }
+            catch (Exception ex)
+            {
+                try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
+                Logging.LogWarning("Suite Aura provider registration failed: " + ex.GetType().Name);
+            }
             Logging.LogInfo("Erenshor Follow loaded. Use /efollow <SimName> or /efollow off. /dsfollow is also accepted for compatibility.");
             Logging.LogInfo("Sim-Led Expeditions available: /expedition status|pause|resume|cancel|return.");
         }
@@ -51,6 +63,16 @@ namespace ErenshorFollow
 
         private void Update()
         {
+            try
+            {
+                int control = _pendingControlAction; _pendingControlAction = 0;
+                if (control == 1) StopAllTravel(null, null);
+                else if (control == 2 && ExpeditionCoordinator.IsActive) ExpeditionCoordinator.Pause(ExpeditionPauseReason.PlayerRequest);
+                else if (control == 3 && ExpeditionCoordinator.IsActive) ExpeditionCoordinator.Resume();
+                else if (control == 4 && ExpeditionCoordinator.IsActive) ExpeditionCoordinator.Cancel("you called it off from Suite Hub.");
+                else if (control == 5 && ExpeditionCoordinator.CanReturn()) ExpeditionCoordinator.TryReturn();
+            }
+            catch (Exception ex) { Logging.LogError("Follow Hub action failed: " + ex); }
             try { FollowController.Tick(); }
             catch (Exception ex)
             {
@@ -70,7 +92,15 @@ namespace ErenshorFollow
                 Logging.LogError("Expedition update failed: " + ex);
                 ExpeditionCoordinator.Cancel("an internal error stopped the expedition.");
             }
-            try { SimActionMenu.Tick(); }
+            try
+            {
+                if (SuiteUiPolicy.IsGameplayReady()) SimActionMenu.Tick();
+                else
+                {
+                    SimActionMenu.ForceCloseForLifecycle();
+                    TravelStatusOverlay.CancelDragGesture();
+                }
+            }
             catch (Exception ex) { Logging.LogError("Sim action menu update failed: " + ex); }
         }
 
@@ -78,6 +108,7 @@ namespace ErenshorFollow
         {
             try
             {
+                if (!SuiteUiPolicy.IsGameplayReady()) return;
                 TravelStatusOverlay.Draw();
                 SimActionMenu.Draw();
             }
@@ -86,6 +117,8 @@ namespace ErenshorFollow
 
         private void OnDestroy()
         {
+            try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
+            _auraProvider = null;
             try { SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }
             ExpeditionCoordinator.Shutdown();
             LeaderController.Stop(null);
@@ -93,6 +126,10 @@ namespace ErenshorFollow
             if (_harmony != null) _harmony.UnpatchSelf();
             CoopCompatibility.Reset();
             ExpeditionIntegrationBridge.Reset();
+            SimActionMenu.DisposeForLifecycle();
+            TravelStatusOverlay.ResetForLifecycle();
+            _pendingControlAction = 0;
+            SuiteUiPolicy.Reset();
             if (Instance == this) Instance = null;
         }
 
@@ -111,6 +148,34 @@ namespace ErenshorFollow
             {
                 Logging.LogWarning("Could not disable the embedded Deep Sims follow prefix: " + ex.Message);
             }
+        }
+
+        internal bool RequestControlAction(int action) { if (action < 1 || action > 5) return false; _pendingControlAction = action; return true; }
+
+        internal bool TrySetControlSetting(string settingId, string value, out string failure)
+        {
+            failure = null;
+            string normalized;
+            if (!FollowSuiteDescriptorPolicy.TryNormalizeSettingValue(settingId, value, out normalized))
+            {
+                failure = string.Equals((settingId ?? string.Empty).Trim(), "verboseDiagnostics", StringComparison.OrdinalIgnoreCase)
+                    ? "Expected true or false."
+                    : "Unknown setting id.";
+                return false;
+            }
+            bool enabled = string.Equals(normalized, "true", StringComparison.Ordinal);
+            bool oldValue = Settings.DiagnosticsVerbose;
+            Settings.DiagnosticsVerbose = enabled;
+            VerboseDiagnostics = enabled;
+            try { Config.Save(); }
+            catch (Exception ex)
+            {
+                Settings.DiagnosticsVerbose = oldValue;
+                VerboseDiagnostics = oldValue;
+                failure = "Could not save Follow settings (" + ex.GetType().Name + ").";
+                return false;
+            }
+            return true;
         }
 
         internal void LogError(string message)

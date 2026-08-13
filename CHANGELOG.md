@@ -141,3 +141,11 @@ LLM-generated destinations, automatic leader replacement, and replacement combat
 - Excluded remote COOP humans and retained runtime-only optional companion detection.
 
 Future compatibility work may expose stable read-only travel lifecycle state and verified arrival notifications without giving Follow responsibility for Deep Sims memory.
+
+
+## Unreleased - Suite UI/API coherence handoff
+
+- Added optional, versioned `FollowControlApi` discovery/control surface for Suite Hub without a hard Hub dependency.
+- Kept standalone commands and core gameplay authority intact.
+- Documented the retained panel/launcher policy and Lunaris live-test requirement.
+- Gated contextual travel UI until stable in-world state and added a primitive-only Hub status/action surface. Follow/Lead/Expedition movement logic is unchanged.
