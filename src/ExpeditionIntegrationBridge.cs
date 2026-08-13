@@ -14,12 +14,35 @@ namespace ErenshorFollow
         private static MethodInfo _observed;
         private static FieldInfo _instanceField;
         private static volatile bool _resolved;
+        private static bool _subscribed;
 
-        static ExpeditionIntegrationBridge()
+        // Lunaris load order is not guaranteed, so a resolve that ran first must not cache
+        // "absent". A named handler (not an anonymous delegate) so it can be unsubscribed on
+        // unload instead of leaking a reference into this assembly across a Lunaris hot reload.
+        internal static void Initialize()
         {
-            // BepInEx load order is not guaranteed, so a resolve that ran first must not cache "absent".
-            try { AppDomain.CurrentDomain.AssemblyLoad += delegate { _resolved = false; }; }
+            if (_subscribed) return;
+            try { AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad; _subscribed = true; }
             catch { }
+        }
+
+        internal static void Reset()
+        {
+            if (_subscribed)
+            {
+                try { AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad; } catch { }
+                _subscribed = false;
+            }
+            _pluginType = null;
+            _structured = null;
+            _observed = null;
+            _instanceField = null;
+            _resolved = false;
+        }
+
+        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            _resolved = false;
         }
 
         internal static void Emit(string eventType, ExpeditionSession session)

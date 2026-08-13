@@ -11,13 +11,35 @@ namespace ErenshorFollow
         private static Type _legacyNetworkedPlayer;
         private static Type _networkedSim;
         private static volatile bool _resolved;
+        private static bool _subscribed;
 
-        // BepInEx load order is not guaranteed, so a resolve that ran before ErenshorCoop's
-        // assembly loaded would otherwise cache "not installed" for the rest of the session.
-        static CoopCompatibility()
+        // Lunaris load order is not guaranteed, so a resolve that ran before ErenshorCoop's
+        // assembly loaded would otherwise cache "not installed" for the rest of the session. A
+        // named handler (not an anonymous delegate) so it can be unsubscribed on unload instead
+        // of leaking a reference into this assembly across a Lunaris hot reload.
+        internal static void Initialize()
         {
-            try { AppDomain.CurrentDomain.AssemblyLoad += delegate { _resolved = false; }; }
+            if (_subscribed) return;
+            try { AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad; _subscribed = true; }
             catch { }
+        }
+
+        internal static void Reset()
+        {
+            if (_subscribed)
+            {
+                try { AppDomain.CurrentDomain.AssemblyLoad -= OnAssemblyLoad; } catch { }
+                _subscribed = false;
+            }
+            _networkedPlayer = null;
+            _legacyNetworkedPlayer = null;
+            _networkedSim = null;
+            _resolved = false;
+        }
+
+        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            _resolved = false;
         }
 
         internal static bool IsRemoteHuman(SimPlayer sim)

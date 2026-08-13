@@ -423,7 +423,7 @@ namespace ErenshorFollow
         }
 
         // High-frequency click/open/close diagnostics are noisy in normal play; gate them behind the
-        // Diagnostics.Verbose config toggle instead of always writing to the BepInEx log.
+        // Diagnostics.Verbose config toggle instead of always writing to the Lunaris log.
         private static void Debug(string message)
         {
             if (!ErenshorFollowPlugin.VerboseDiagnostics) return;

@@ -1,47 +1,52 @@
 using System;
-using BepInEx;
+using Lunaris;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace ErenshorFollow
 {
-    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    [BepInProcess("Erenshor.exe")]
-    [BepInDependency("forgetwhtuno.erenshor.deepsims", BepInDependency.DependencyFlags.SoftDependency)]
-    public sealed class ErenshorFollowPlugin : BaseUnityPlugin
+    // Deep Sims compatibility is reflection/owner-ID based (see DisableEmbeddedDeepSimsFollow
+    // and CoopCompatibility/ExpeditionIntegrationBridge) rather than a declared loader
+    // dependency, so it continues to work whether or not Deep Sims is present or has loaded yet.
+    [LunarisPlugin(PluginGuid, PluginVersion, "forgetwhtuno",
+        "Player movement assistance, Sim-led travel, and expedition coordination around existing Erenshor zone transitions.")]
+    [LunarisPermission(LunarisPermission.Reflection | LunarisPermission.Harmony)]
+    public sealed class ErenshorFollowPlugin : LunarisPlugin
     {
         internal const string PluginGuid = "forgetwhtuno.erenshor.follow";
         internal const string PluginName = "Erenshor Follow";
-        internal const string PluginVersion = "0.4.2";
+        internal const string PluginVersion = "0.5.0";
         internal static ErenshorFollowPlugin Instance;
         internal static bool VerboseDiagnostics { get; private set; }
 
         private Harmony _harmony;
+        internal FollowSettings Settings;
 
         private void Awake()
         {
             Instance = this;
+            Settings = new FollowSettings();
+            Config.Register(ref Settings);
 
-            TravelStatusOverlay.OffsetX = Config.Bind("UI", "OverlayOffsetX", 0f,
-                "Pixels to shift the travel status overlay left from its default top-right position (increase if it overlaps the minimap).").Value;
-            TravelStatusOverlay.OffsetY = Config.Bind("UI", "OverlayOffsetY", 0f,
-                "Pixels to shift the travel status overlay down from its default top-right position.").Value;
-            VerboseDiagnostics = Config.Bind("Diagnostics", "Verbose", false,
-                "Enable detailed click/route diagnostics. Normal play keeps high-frequency action-menu logging quiet.").Value;
+            TravelStatusOverlay.OffsetX = Settings.OverlayOffsetX;
+            TravelStatusOverlay.OffsetY = Settings.OverlayOffsetY;
+            VerboseDiagnostics = Settings.DiagnosticsVerbose;
 
+            CoopCompatibility.Initialize();
+            ExpeditionIntegrationBridge.Initialize();
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll();
             DisableEmbeddedDeepSimsFollow();
             SceneManager.sceneLoaded += OnSceneLoaded;
-            Logger.LogInfo("Erenshor Follow loaded. Use /efollow <SimName> or /efollow off. /dsfollow is also accepted for compatibility.");
-            Logger.LogInfo("Sim-Led Expeditions available: /expedition status|pause|resume|cancel|return.");
+            Logging.LogInfo("Erenshor Follow loaded. Use /efollow <SimName> or /efollow off. /dsfollow is also accepted for compatibility.");
+            Logging.LogInfo("Sim-Led Expeditions available: /expedition status|pause|resume|cancel|return.");
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             try { ExpeditionCoordinator.HandleSceneLoaded(scene); }
-            catch (Exception ex) { Logger.LogError("Expedition scene handling failed: " + ex); }
+            catch (Exception ex) { Logging.LogError("Expedition scene handling failed: " + ex); }
         }
 
         private void Update()
@@ -49,24 +54,24 @@ namespace ErenshorFollow
             try { FollowController.Tick(); }
             catch (Exception ex)
             {
-                Logger.LogError("Follow update failed: " + ex);
+                Logging.LogError("Follow update failed: " + ex);
                 FollowController.Stop();
             }
             try { LeaderController.Tick(); }
             catch (Exception ex)
             {
-                Logger.LogError("Leader travel update failed: " + ex);
+                Logging.LogError("Leader travel update failed: " + ex);
                 LeaderController.Stop("Leader travel stopped after an internal error.");
             }
             // Runs after the leg so this frame's leg outcomes are consumed by the coordinator immediately.
             try { ExpeditionCoordinator.Tick(); }
             catch (Exception ex)
             {
-                Logger.LogError("Expedition update failed: " + ex);
+                Logging.LogError("Expedition update failed: " + ex);
                 ExpeditionCoordinator.Cancel("an internal error stopped the expedition.");
             }
             try { SimActionMenu.Tick(); }
-            catch (Exception ex) { Logger.LogError("Sim action menu update failed: " + ex); }
+            catch (Exception ex) { Logging.LogError("Sim action menu update failed: " + ex); }
         }
 
         private void OnGUI()
@@ -76,7 +81,7 @@ namespace ErenshorFollow
                 TravelStatusOverlay.Draw();
                 SimActionMenu.Draw();
             }
-            catch (Exception ex) { Logger.LogError("Follow UI draw failed: " + ex); }
+            catch (Exception ex) { Logging.LogError("Follow UI draw failed: " + ex); }
         }
 
         private void OnDestroy()
@@ -86,6 +91,9 @@ namespace ErenshorFollow
             LeaderController.Stop(null);
             FollowController.Stop();
             if (_harmony != null) _harmony.UnpatchSelf();
+            CoopCompatibility.Reset();
+            ExpeditionIntegrationBridge.Reset();
+            if (Instance == this) Instance = null;
         }
 
         private void DisableEmbeddedDeepSimsFollow()
@@ -96,23 +104,30 @@ namespace ErenshorFollow
                 if (movement != null)
                 {
                     _harmony.Unpatch(movement, HarmonyPatchType.Prefix, "forgetwhtuno.erenshor.deepsims");
-                    Logger.LogInfo("Standalone Follow owns player-follow movement; disabled the embedded Deep Sims movement prefix.");
+                    Logging.LogInfo("Standalone Follow owns player-follow movement; disabled the embedded Deep Sims movement prefix.");
                 }
             }
             catch (Exception ex)
             {
-                Logger.LogWarning("Could not disable the embedded Deep Sims follow prefix: " + ex.Message);
+                Logging.LogWarning("Could not disable the embedded Deep Sims follow prefix: " + ex.Message);
             }
         }
 
         internal void LogError(string message)
         {
-            Logger.LogError(message);
+            Logging.LogError(message);
         }
 
         internal void LogDebug(string message)
         {
-            Logger.LogDebug(message);
+            Logging.LogDebug(message);
+        }
+
+        // Native Lunaris config does not auto-persist a .Value write to disk the way BepInEx's
+        // ConfigEntry did. Called after TravelStatusOverlay's position config changes.
+        internal void SavePersistedSettings()
+        {
+            try { Config.Save(); } catch { }
         }
 
         internal void Chat(string message, string color = "lightblue")

@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0 — Native Lunaris migration
+
+- Migrated off BepInEx 5 onto native Lunaris: `BaseUnityPlugin`/`[BepInPlugin]`/`[BepInProcess]`/
+  `[BepInDependency]`/`Logger` replaced by `LunarisPlugin`/`[LunarisPlugin]`/
+  `[LunarisPermission(Reflection | Harmony)]`/native `Logging`. `BepInEx.Configuration.ConfigEntry<T>`
+  replaced by a new typed `FollowSettings` class (`[Config]` fields) plus a small
+  `FollowConfigEntry<T>` compatibility shim. All 5 existing settings
+  (`UI/OverlayOffsetX`, `UI/OverlayOffsetY`, `Diagnostics/Verbose`, `UI/OverlayPositionX`,
+  `UI/OverlayPositionY`) are preserved verbatim (section/key/default/description).
+- `TravelStatusOverlay`'s legacy offset-to-position first-run migration (a user's old
+  `OverlayOffsetX`/`Y` seeding an initial screen-relative panel position) is preserved, adapted to
+  detect "first run" by checking whether the position config is still at its compiled-in default
+  rather than relying on a lazy `ConfigFile.Bind`, since Lunaris settings are registered upfront.
+  Native Lunaris config does not auto-persist a `.Value` write to disk the way BepInEx's
+  `ConfigEntry` did, so dragging the panel now explicitly calls `Config.Save()` afterward.
+- The `[BepInDependency(..., SoftDependency)]` declaration on Deep Sims is not carried forward:
+  Deep Sims compatibility here has always been reflection/Harmony-owner-ID based
+  (`DisableEmbeddedDeepSimsFollow`, `CoopCompatibility`, `ExpeditionIntegrationBridge`), not
+  dependent on a declared loader dependency, so nothing about that compatibility path changed.
+- **Fixed a hot-reload event leak** in `CoopCompatibility.cs` and `ExpeditionIntegrationBridge.cs`:
+  both previously subscribed `AppDomain.CurrentDomain.AssemblyLoad` to an anonymous delegate from
+  a static constructor, with no corresponding unsubscribe. Converted to a named handler behind
+  explicit `Initialize()`/`Reset()` methods, wired from the plugin's `Awake()`/`OnDestroy()`, so
+  unloading the plugin actually unsubscribes instead of leaking a reference into the old assembly
+  across a Lunaris hot reload. This is the same anti-pattern already found and fixed in three other
+  mods during this migration series.
+- This is a loader/config/logging/lifecycle migration only: no follow/lead/expedition/route
+  logic, command grammar, or NavMesh/zoneline handling changed. Every Harmony patch target was
+  re-verified against the currently installed `Assembly-CSharp.dll`.
+- `BUILD_AND_INSTALL.ps1` rewritten for Lunaris: install target is now
+  `<Erenshor>\plugins\ErenshorFollow.dll`; reference resolution now looks for a Lunaris developer
+  folder (`Lunaris.dll`/`0Harmony.dll`) instead of a BepInEx profile root; all
+  r2modman/Thunderstore BepInEx-profile auto-detection removed.
+- Verified: real compile against the installed Erenshor + Lunaris assemblies, zero `BepInEx`
+  references in the compiled output, the full existing deterministic test suite (`RUN_TESTS.ps1`
+  — route candidate policy, natural-language lead grammar, cross-zone rebind policy, and UI/Camp
+  handoff policy) still passes unchanged, and a static hot-unload audit (the
+  `SceneManager.sceneLoaded` subscription is unsubscribed in `OnDestroy()`, `Harmony.UnpatchSelf()`
+  is called, the static plugin instance is cleared, and both `AssemblyLoad` subscriptions described
+  above are now properly torn down).
+- Not yet done: live in-game verification under Lunaris, including movement-assist/expedition
+  behavior around real zone transitions and repeated unload/reload while Follow or an Expedition is
+  active.
+
 ## 0.4.2 — Zoneline trigger geometry correction
 
 - Restrict Zoneline geometry sampling to enabled trigger colliders. Large solid child colliders can belong to nearby rocks or terrain; they no longer make a point beside an obstruction appear to be the transition itself.
