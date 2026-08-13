@@ -71,3 +71,14 @@ and Lunaris assemblies. Install Deep Sims separately if social dialogue integrat
 This project has been developed heavily with AI-assisted coding tools. The goal has been to build features I wanted to use in Erenshor, with development guided through design, testing, playtesting, audits, and iteration against the game. Bug reports, code review, corrections, and contributions from experienced Erenshor modders are welcome.
 
 This is an unofficial, community-made mod for Erenshor and is not affiliated with or endorsed by the game's developer.
+
+
+## Optional Suite Hub integration
+
+Erenshor Suite Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `FollowControlApi` surface. The mod remains independently usable without Suite Hub and does not compile against Hub types or assume Hub load order.
+
+Follow keeps its contextual Sim action menu and travel overlay rather than adding a general module panel or launcher. `/efollow`, `/elead`, and `/expedition` remain available standalone.
+
+Hub can show current Follow/Lead/Expedition state and expose Stop plus the existing expedition pause/resume/cancel/return actions. Its Developer settings tier may also toggle the existing `Diagnostics/Verbose` setting; overlay coordinates remain owned by Follow's contextual UI rather than becoming Hub controls. Erenshor remains authoritative for movement, NavMesh, zonelines, scene changes, combat, and identity.
+
+The shared control/API and fully-in-world UI policy in this handoff are source-validated but **not yet live-tested under Lunaris hot reload**.

@@ -325,6 +325,38 @@ namespace ErenshorFollow
             Debug("menu opened for " + _selectedName + " via " + source + "; verified exits=" + _selectedZones.Count);
         }
 
+        internal static void ForceCloseForLifecycle()
+        {
+            if (_open) Close("gameplay not ready", false);
+            _suppressLeftClickUntilRelease = false;
+            _nativeLeftClickActive = false;
+            _nativeLeftClickTarget = null;
+        }
+
+        internal static void DisposeForLifecycle()
+        {
+            ForceCloseForLifecycle();
+            DestroyTexture(ref _panelTexture);
+            DestroyTexture(ref _buttonTexture);
+            DestroyTexture(ref _buttonHoverTexture);
+            DestroyTexture(ref _stopTexture);
+            DestroyTexture(ref _closeTexture);
+            _windowStyle = null;
+            _titleStyle = null;
+            _nameStyle = null;
+            _hintStyle = null;
+            _buttonStyle = null;
+            _stopButtonStyle = null;
+            _closeButtonStyle = null;
+        }
+
+        private static void DestroyTexture(ref Texture2D texture)
+        {
+            if (texture == null) return;
+            try { UnityEngine.Object.Destroy(texture); } catch { }
+            texture = null;
+        }
+
         internal static bool BeginNativeLeftClick()
         {
             _nativeLeftClickActive = false;
