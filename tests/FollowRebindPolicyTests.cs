@@ -40,7 +40,7 @@ namespace ErenshorFollow
             object tracking = new object();
             FollowIntentState<object> intent = new FollowIntentState<object>();
             intent.Begin(tracking);
-            Assert(FollowRebindPolicy.CanSuspendForZone(true, true, intent.Identity != null), "verified zoning permits direct Follow suspension");
+            Assert(FollowRebindPolicy.CanSuspendForZone(true, true, intent.Identity != null, true), "verified zoning permits direct Follow suspension");
             Assert(intent.BeginRebinding(), "active Follow enters rebind");
             Assert(intent.Phase == FollowIntentPhase.Rebinding, "rebind phase active");
             Assert(object.ReferenceEquals(tracking, intent.Identity), "persistent tracking identity preserved");
@@ -129,10 +129,14 @@ namespace ErenshorFollow
 
         private static void OrdinaryTargetLossDoesNotBecomeResumable()
         {
-            Assert(!FollowRebindPolicy.CanSuspendForZone(true, false, true),
+            Assert(!FollowRebindPolicy.CanSuspendForZone(true, false, true, true),
                 "ordinary target loss without verified zoning cannot suspend");
-            Assert(!FollowRebindPolicy.CanSuspendForZone(false, true, true),
+            Assert(!FollowRebindPolicy.CanSuspendForZone(false, true, true, true),
                 "leader-owned Follow does not enter direct rebind state");
+            Assert(!FollowRebindPolicy.CanSuspendForZone(true, true, true, false),
+                "experimental cross-zone continuation OFF prevents suspension");
+            Assert(!FollowRebindPolicy.CanSuspendForZone(true, true, false, true),
+                "missing persistent identity prevents suspension");
         }
 
         private static void AvatarMayAppearLateButIsBounded()
@@ -157,6 +161,14 @@ namespace ErenshorFollow
                 "mismatched avatar identity stops rebind");
         }
 
+        private static void DeadOrUnavailableReboundAvatarStops()
+        {
+            FollowRebindInputs input = ReadyInputs();
+            input.AvatarUsable = false;
+            Assert(Evaluate(input, FollowRebindFailure.TargetUnavailable, "dead rebound avatar") == FollowRebindDecision.Stop,
+                "dead or unavailable rebound avatar cannot resume Follow");
+        }
+
         public static int Main()
         {
             ActiveFollowZoningPreservesTrackingIntent();
@@ -171,6 +183,7 @@ namespace ErenshorFollow
             OrdinaryTargetLossDoesNotBecomeResumable();
             AvatarMayAppearLateButIsBounded();
             IdentityMismatchStops();
+            DeadOrUnavailableReboundAvatarStops();
             Console.WriteLine("All deterministic Follow rebind tests passed (" + _passed + " assertions).");
             return 0;
         }

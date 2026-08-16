@@ -79,9 +79,9 @@ namespace ErenshorFollow
 
     internal static class FollowRebindPolicy
     {
-        internal static bool CanSuspendForZone(bool directFollow, bool verifiedZoning, bool hasPersistentIdentity)
+        internal static bool CanSuspendForZone(bool directFollow, bool verifiedZoning, bool hasPersistentIdentity, bool continuationEnabled)
         {
-            return directFollow && verifiedZoning && hasPersistentIdentity;
+            return directFollow && verifiedZoning && hasPersistentIdentity && continuationEnabled;
         }
 
         internal static bool SameIdentity<TIdentity>(TIdentity expected, TIdentity actual) where TIdentity : class

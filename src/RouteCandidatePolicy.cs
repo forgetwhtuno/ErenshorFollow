@@ -203,6 +203,7 @@ namespace ErenshorFollow
         {
             NoAcceptedRoute,
             CrossingApproachFailed,
+            CrossingTransitionFailed,
             TravelExecutionFailed
         }
 
@@ -227,6 +228,8 @@ namespace ErenshorFollow
             {
                 case RouteFailureKind.CrossingApproachFailed:
                     return "could not reach a valid crossing approach to " + target + FailureDetail(reason);
+                case RouteFailureKind.CrossingTransitionFailed:
+                    return "native crossing to " + target + " did not complete" + FailureDetail(reason);
                 case RouteFailureKind.TravelExecutionFailed:
                     return "travel to " + target + " failed" + FailureDetail(reason);
                 default:

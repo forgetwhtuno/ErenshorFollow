@@ -17,7 +17,7 @@ namespace ErenshorFollow
                 + "&version=" + Escape(Bound(version, 32))
                 + "&summary=" + Escape("Local movement-assist and Sim-led travel")
                 + "&status=" + Escape(Bound(status, MaxHubText))
-                + "&actions=stop,pauseExpedition,resumeExpedition,cancelExpedition,return";
+                + "&actions=closePanel,stop,pauseExpedition,resumeExpedition,cancelExpedition,return";
         }
 
         internal static string BuildDeveloperSettings(bool verboseDiagnostics)

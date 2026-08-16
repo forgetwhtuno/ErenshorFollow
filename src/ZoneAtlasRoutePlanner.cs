@@ -3,8 +3,8 @@ using System.Collections.Generic;
 
 namespace ErenshorFollow
 {
-    // ZoneAtlas supplies only a game-authored itinerary. Every hop still has to resolve to a live,
-    // non-party-removing Zoneline before movement begins; this class never moves or zones anything.
+    // ZoneAtlas supplies only a game-authored candidate itinerary. Every current hop still has to resolve
+    // to a live, active, non-party-removing Zoneline before movement begins; this class never moves or zones.
     internal static class ZoneAtlasRoutePlanner
     {
         internal static bool TryBuild(string origin, string requested, out List<string> route,
@@ -16,131 +16,104 @@ namespace ErenshorFollow
         internal static bool TryBuild(string origin, string requested, IList<string> allowedFirstHops,
             out List<string> route, out bool ambiguous, out string failure)
         {
-            route = new List<string>();
-            ambiguous = false;
-            failure = null;
-            if (string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(requested))
-            {
-                failure = "An origin and destination are required.";
-                return false;
-            }
+            return ZoneRouteGraphPolicy.TryBuild(ReadGraph(), origin, requested, allowedFirstHops,
+                out route, out ambiguous, out failure);
+        }
 
-            Dictionary<string, ZoneAtlasEntry> entries = ReadEntries();
-            string start = ResolveName(entries, origin, out ambiguous);
-            if (start == null)
-            {
-                failure = "The current zone is not present in the game's zone atlas.";
-                return false;
-            }
-            string goal = ResolveName(entries, requested, out ambiguous);
-            if (goal == null)
-            {
-                failure = ambiguous ? "More than one world zone matches that destination." :
-                    "That destination is not present in the game's zone atlas.";
-                return false;
-            }
-            if (start.Equals(goal, StringComparison.OrdinalIgnoreCase))
-            {
-                route.Add(start);
-                return true;
-            }
-
-            Queue<string> open = new Queue<string>();
-            Dictionary<string, string> previous = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            open.Enqueue(start);
-            previous[start] = null;
-            while (open.Count > 0)
-            {
-                string current = open.Dequeue();
-                ZoneAtlasEntry entry;
-                if (!entries.TryGetValue(current, out entry) || entry == null || entry.NeighboringZones == null) continue;
-                for (int i = 0; i < entry.NeighboringZones.Count; i++)
-                {
-                    string neighbor = Canonical(entries, entry.NeighboringZones[i]);
-                    if (current.Equals(start, StringComparison.OrdinalIgnoreCase) &&
-                        allowedFirstHops != null &&
-                        !ContainsName(allowedFirstHops, neighbor)) continue;
-                    if (neighbor == null || previous.ContainsKey(neighbor)) continue;
-                    previous[neighbor] = current;
-                    if (neighbor.Equals(goal, StringComparison.OrdinalIgnoreCase))
-                    {
-                        BuildPath(previous, goal, route);
-                        return true;
-                    }
-                    open.Enqueue(neighbor);
-                }
-            }
-
-            failure = "The game's zone atlas has no route from " + start + " to " + goal + ".";
-            return false;
+        // Setup-window surface: only destinations whose atlas route starts through one of the currently
+        // verified live Zoneline names are advertised. Future hops remain candidates and are re-proven live
+        // after each real native zone transition.
+        internal static List<ExpeditionRouteChoice> ListReachableRoutes(string origin, IList<string> liveFirstHops)
+        {
+            return ZoneRouteGraphPolicy.ListReachable(ReadGraph(), origin, liveFirstHops);
         }
 
         internal static List<string> ListZoneNames()
         {
-            List<string> names = new List<string>(ReadEntries().Keys);
+            List<string> names = new List<string>(ReadGraph().Keys);
             names.Sort(StringComparer.OrdinalIgnoreCase);
             return names;
         }
 
-        private static Dictionary<string, ZoneAtlasEntry> ReadEntries()
+        internal static string DescribeDiscovery(string origin, IList<string> liveFirstHops)
         {
-            Dictionary<string, ZoneAtlasEntry> entries = new Dictionary<string, ZoneAtlasEntry>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, List<string>> graph = ReadGraph();
+            int authoredLinks = 0;
+            foreach (List<string> links in graph.Values) if (links != null) authoredLinks += links.Count;
+            Dictionary<string, List<string>> traversal = ZoneRouteGraphPolicy.BuildTraversalGraph(graph);
+            int normalizedLinks = 0;
+            foreach (List<string> links in traversal.Values) if (links != null) normalizedLinks += links.Count;
+            List<ExpeditionRouteChoice> reachable = ZoneRouteGraphPolicy.ListReachable(graph, origin, liveFirstHops);
+            List<string> names = new List<string>();
+            for (int i = 0; i < reachable.Count && i < 8; i++)
+                names.Add(reachable[i].DestinationName + (reachable[i].Nearby ? "(near)" : "(" + reachable[i].TransitionCount + " hops)"));
+            return "[Erenshor Expedition] atlas: origin=" + Safe(origin) +
+                " nodes=" + graph.Count +
+                " authoredLinks=" + authoredLinks +
+                " normalizedEdges=" + (normalizedLinks / 2) +
+                " liveFirstHops=" + Join(liveFirstHops) +
+                " reachable=" + reachable.Count +
+                (names.Count == 0 ? string.Empty : " | " + string.Join(", ", names.ToArray()));
+        }
+
+        private static string Join(IList<string> values)
+        {
+            if (values == null || values.Count == 0) return "none";
+            List<string> clean = new List<string>();
+            for (int i = 0; i < values.Count; i++)
+                if (!string.IsNullOrWhiteSpace(values[i])) clean.Add(values[i].Trim());
+            return clean.Count == 0 ? "none" : string.Join(",", clean.ToArray());
+        }
+
+        private static string Safe(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "unknown" : value.Replace("\n", " ").Replace("\r", " ").Trim();
+        }
+
+        private static Dictionary<string, List<string>> ReadGraph()
+        {
+            Dictionary<string, List<string>> graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 ZoneAtlasEntry[] atlas = ZoneAtlas.Atlas;
-                if (atlas == null) return entries;
+                if (atlas == null) return graph;
+
+                // First collect canonical names so stale/unknown neighbor strings cannot create invented nodes.
                 for (int i = 0; i < atlas.Length; i++)
                 {
                     ZoneAtlasEntry entry = atlas[i];
                     if (entry == null || string.IsNullOrWhiteSpace(entry.ZoneName)) continue;
                     string name = entry.ZoneName.Trim();
-                    if (!entries.ContainsKey(name)) entries.Add(name, entry);
+                    if (!graph.ContainsKey(name)) graph.Add(name, new List<string>());
+                }
+
+                for (int i = 0; i < atlas.Length; i++)
+                {
+                    ZoneAtlasEntry entry = atlas[i];
+                    if (entry == null || string.IsNullOrWhiteSpace(entry.ZoneName) || entry.NeighboringZones == null) continue;
+                    string name = Canonical(graph, entry.ZoneName);
+                    if (name == null) continue;
+                    List<string> neighbors = graph[name];
+                    for (int n = 0; n < entry.NeighboringZones.Count; n++)
+                    {
+                        string neighbor = Canonical(graph, entry.NeighboringZones[n]);
+                        if (neighbor == null || ContainsName(neighbors, neighbor)) continue;
+                        neighbors.Add(neighbor);
+                    }
+                    neighbors.Sort(StringComparer.OrdinalIgnoreCase);
                 }
             }
             catch { }
-            return entries;
+            return graph;
         }
 
-        private static string ResolveName(Dictionary<string, ZoneAtlasEntry> entries, string requested, out bool ambiguous)
+        private static string Canonical(Dictionary<string, List<string>> graph, string value)
         {
-            ambiguous = false;
-            if (entries == null || string.IsNullOrWhiteSpace(requested)) return null;
-            string query = requested.Trim();
-            ZoneAtlasEntry exact;
-            if (entries.TryGetValue(query, out exact)) return exact.ZoneName.Trim();
-            string match = null;
-            foreach (string name in entries.Keys)
-            {
-                if (name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                if (match != null && !match.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    ambiguous = true;
-                    return null;
-                }
-                match = name;
-            }
-            return match;
-        }
-
-        private static string Canonical(Dictionary<string, ZoneAtlasEntry> entries, string value)
-        {
-            if (entries == null || string.IsNullOrWhiteSpace(value)) return null;
-            ZoneAtlasEntry entry;
-            return entries.TryGetValue(value.Trim(), out entry) && entry != null && !string.IsNullOrWhiteSpace(entry.ZoneName)
-                ? entry.ZoneName.Trim() : null;
-        }
-
-        private static void BuildPath(Dictionary<string, string> previous, string goal, List<string> route)
-        {
-            string cursor = goal;
-            while (cursor != null)
-            {
-                route.Add(cursor);
-                string prior;
-                if (!previous.TryGetValue(cursor, out prior)) break;
-                cursor = prior;
-            }
-            route.Reverse();
+            if (graph == null || string.IsNullOrWhiteSpace(value)) return null;
+            string query = value.Trim();
+            foreach (string key in graph.Keys)
+                if (key.Equals(query, StringComparison.OrdinalIgnoreCase)) return key;
+            return null;
         }
 
         private static bool ContainsName(IList<string> names, string value)

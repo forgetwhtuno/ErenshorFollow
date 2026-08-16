@@ -4,22 +4,24 @@ using Lunaris.IPC;
 
 namespace ErenshorFollow
 {
-    // Optional Aura transport over the public FollowControlApi. No Hub assembly reference and no
-    // gameplay logic: actions/settings still revalidate in the authoritative Follow mod.
+    // Optional Aura transport over Follow's authoritative control surface. This owns no movement
+    // or routing logic and has no compile-time Suite Hub dependency.
     internal sealed class FollowSuiteAuraProvider
     {
         private const string Prefix = "forgetwhtuno.erenshor.suite.follow.v1.";
         private const int MaxFieldLength = 200;
-
         private readonly IAuraProvider<string> _describe;
         private readonly IAuraProvider<string> _developerSettings;
+        private readonly IAuraProvider<string> _uiState;
         private readonly IAuraProvider<string, string, string> _setSetting;
         private readonly IAuraProvider<string, string, string> _action;
+        internal bool Registered { get; private set; }
 
         internal FollowSuiteAuraProvider(LunarisPlugin owner)
         {
             _describe = owner.IPCAuraProvider<string>(Prefix + "describe");
             _developerSettings = owner.IPCAuraProvider<string>(Prefix + "settings.developer");
+            _uiState = owner.IPCAuraProvider<string>(Prefix + "ui.state");
             _setSetting = owner.IPCAuraProvider<string, string, string>(Prefix + "setting.set");
             _action = owner.IPCAuraProvider<string, string, string>(Prefix + "action");
         }
@@ -30,21 +32,20 @@ namespace ErenshorFollow
             {
                 _describe.RegisterFunc(Describe);
                 _developerSettings.RegisterFunc(DeveloperSettings);
+                _uiState.RegisterFunc(UiState);
                 _setSetting.RegisterFunc(SetSetting);
                 _action.RegisterFunc(InvokeAction);
+                Registered = true;
             }
-            catch
-            {
-                Unregister();
-                throw;
-            }
+            catch { Unregister(); throw; }
         }
 
         internal void Unregister()
         {
-            // Always attempt every endpoint so partial registration cannot leak across hot reload.
+            Registered = false;
             try { if (_setSetting != null) _setSetting.UnregisterFunc(); } catch { }
             try { if (_action != null) _action.UnregisterFunc(); } catch { }
+            try { if (_uiState != null) _uiState.UnregisterFunc(); } catch { }
             try { if (_developerSettings != null) _developerSettings.UnregisterFunc(); } catch { }
             try { if (_describe != null) _describe.UnregisterFunc(); } catch { }
         }
@@ -52,6 +53,12 @@ namespace ErenshorFollow
         private static string Describe()
         {
             return FollowSuiteDescriptorPolicy.BuildDescribe(ErenshorFollowPlugin.PluginVersion, FollowControlApi.GetStatus());
+        }
+
+        private static string UiState()
+        {
+            FollowUiSurfaceCandidate top = FollowUiSurfaceRouter.Topmost();
+            return SuiteUiStatePolicy.Build("follow", top.Open, top.SortOrder, top.Activated);
         }
 
         private static string DeveloperSettings()
@@ -70,6 +77,7 @@ namespace ErenshorFollow
         {
             switch (actionId)
             {
+                case "closePanel": return FollowUiSurfaceRouter.CloseAllVisuals() ? "ok" : "rejected";
                 case "stop": return FollowControlApi.TryStop() ? "ok" : "rejected";
                 case "pauseExpedition": return FollowControlApi.TryPauseExpedition() ? "ok" : "rejected";
                 case "resumeExpedition": return FollowControlApi.TryResumeExpedition() ? "ok" : "rejected";

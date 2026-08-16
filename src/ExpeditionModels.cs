@@ -127,22 +127,31 @@ namespace ErenshorFollow
     // Read-only view for UI. Nothing here may mutate gameplay state.
     internal struct ExpeditionStatusSnapshot
     {
+        internal readonly int SessionId;
         internal readonly bool Active;
         internal readonly ExpeditionState State;
         internal readonly ExpeditionObjective Objective;
         internal readonly string LeaderName;
         internal readonly string DestinationName;
+        internal readonly string CurrentZone;
+        internal readonly string NextZone;
+        internal readonly int RemainingTransitions;
         internal readonly ExpeditionPauseReason PauseReason;
         internal readonly int CombatInterruptions;
 
-        internal ExpeditionStatusSnapshot(bool active, ExpeditionState state, ExpeditionObjective objective,
-            string leaderName, string destinationName, ExpeditionPauseReason pauseReason, int combatInterruptions)
+        internal ExpeditionStatusSnapshot(int sessionId, bool active, ExpeditionState state, ExpeditionObjective objective,
+            string leaderName, string destinationName, string currentZone, string nextZone, int remainingTransitions,
+            ExpeditionPauseReason pauseReason, int combatInterruptions)
         {
+            SessionId = sessionId;
             Active = active;
             State = state;
             Objective = objective;
             LeaderName = leaderName;
             DestinationName = destinationName;
+            CurrentZone = currentZone;
+            NextZone = nextZone;
+            RemainingTransitions = Math.Max(0, remainingTransitions);
             PauseReason = pauseReason;
             CombatInterruptions = combatInterruptions;
         }

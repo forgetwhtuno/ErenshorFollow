@@ -31,6 +31,28 @@ namespace ErenshorFollow
             internal bool NeedsNativeProof { get { return Evaluation != null && Evaluation.NeedsNativeProof; } }
         }
 
+
+        internal sealed class CrossingTraversalOption
+        {
+            internal readonly Vector3 Target;
+            internal readonly string StableKey;
+            internal readonly string TriggerType;
+            internal readonly NavMeshPathStatus PathStatus;
+            internal readonly float RouteLength;
+            internal readonly float StartDistanceToTrigger;
+
+            internal CrossingTraversalOption(Vector3 target, string stableKey, string triggerType,
+                NavMeshPathStatus pathStatus, float routeLength, float startDistanceToTrigger)
+            {
+                Target = target;
+                StableKey = stableKey;
+                TriggerType = triggerType;
+                PathStatus = pathStatus;
+                RouteLength = routeLength;
+                StartDistanceToTrigger = startDistanceToTrigger;
+            }
+        }
+
         internal sealed class CrossingInspection
         {
             internal Zoneline Crossing;
@@ -110,6 +132,39 @@ namespace ErenshorFollow
 
             plan.Options.Sort(OptionComparer.Instance);
             return plan;
+        }
+
+        // Bounded diagnostic summary for a route-readiness boundary.  This consumes the same live
+        // observations used to plan; it never carries a crossing or a NavMesh point across a scene.
+        internal static string DescribeReadiness(Plan plan)
+        {
+            if (plan == null) return "plan=missing";
+            System.Text.StringBuilder text = new System.Text.StringBuilder();
+            text.Append("startSampled=").Append(plan.StartSampled)
+                .Append(" accepted=").Append(plan.Options.Count)
+                .Append(" crossings=").Append(plan.Crossings.Count);
+            for (int i = 0; i < plan.Crossings.Count; i++)
+            {
+                CrossingInspection crossing = plan.Crossings[i];
+                if (crossing == null) continue;
+                text.Append(" | ").Append(crossing.StableKey)
+                    .Append(" active=").Append(crossing.Active)
+                    .Append(" removeParty=").Append(crossing.RemoveParty)
+                    .Append(" colliders=").Append(crossing.ColliderInfo.Count)
+                    .Append(" samples=").Append(crossing.SampledApproachCount)
+                    .Append(" accepted=").Append(crossing.AcceptedOptions.Count);
+                for (int j = 0; j < crossing.Evaluations.Count; j++)
+                {
+                    RouteCandidatePolicy.Evaluation evaluation = crossing.Evaluations[j];
+                    if (evaluation == null || evaluation.Candidate == null) continue;
+                    text.Append(" [").Append(evaluation.Candidate.StableKey)
+                        .Append(" path=").Append(evaluation.Candidate.Path)
+                        .Append(" corners=").Append(evaluation.Candidate.CornerCount)
+                        .Append(" result=").Append(evaluation.Acceptance)
+                        .Append(" reason=").Append(evaluation.Reason).Append("]");
+                }
+            }
+            return text.ToString();
         }
 
         private static CrossingInspection InspectCrossing(Vector3 start, bool startSampled, Vector3 sampledStart, Zoneline crossing, int crossingIndex)
@@ -202,7 +257,7 @@ namespace ErenshorFollow
                 if (collider == null) continue;
                 Bounds bounds = collider.bounds;
                 AddSeed(seeds, bounds.center, 4f);
-                AddSeed(seeds, bounds.ClosestPoint(start), 3f);
+                AddSeed(seeds, ClosestPoint(collider, start), 3f);
             }
 
             Vector3[] around =
@@ -271,11 +326,128 @@ namespace ErenshorFollow
             {
                 Collider collider = colliders[i];
                 if (collider == null) continue;
-                Vector3 nearest = collider.bounds.ClosestPoint(point);
+                Vector3 nearest = ClosestPoint(collider, point);
                 float distance = HorizontalDistance(point, nearest);
                 if (distance < best) best = distance;
             }
             return best;
+        }
+
+        internal static List<CrossingTraversalOption> BuildCrossingTraversalTargets(Vector3 start, Zoneline crossing)
+        {
+            List<CrossingTraversalOption> options = new List<CrossingTraversalOption>();
+            if (crossing == null || crossing.gameObject == null) return options;
+
+            NavMeshHit startHit;
+            if (!NavMesh.SamplePosition(start, out startHit, 4f, NavMesh.AllAreas)) return options;
+
+            Collider[] colliders = GetColliders(crossing);
+            List<Collider> ordered = new List<Collider>(colliders);
+            ordered.Sort(delegate(Collider a, Collider b)
+            {
+                return DistanceToCollider(start, a).CompareTo(DistanceToCollider(start, b));
+            });
+
+            for (int i = 0; i < ordered.Count && options.Count < 6; i++)
+            {
+                Collider collider = ordered[i];
+                if (collider == null) continue;
+                Bounds bounds = collider.bounds;
+                Vector3 direction = bounds.center - startHit.position;
+                direction.y = 0f;
+                if (direction.sqrMagnitude < 0.01f)
+                {
+                    direction = crossing.transform.position - startHit.position;
+                    direction.y = 0f;
+                }
+                if (direction.sqrMagnitude < 0.01f) direction = Vector3.forward;
+                direction.Normalize();
+
+                float projectedExtent = Math.Abs(direction.x) * bounds.extents.x + Math.Abs(direction.z) * bounds.extents.z;
+                Vector3 closest = ClosestPoint(collider, startHit.position);
+                Vector3[] rawTargets =
+                {
+                    bounds.center + direction * (projectedExtent + 1.5f),
+                    bounds.center,
+                    closest + direction * Math.Max(1.0f, Math.Min(2.0f, projectedExtent * 0.5f + 0.75f))
+                };
+
+                for (int t = 0; t < rawTargets.Length && options.Count < 6; t++)
+                    TryAddCrossingTraversalTarget(options, startHit.position, collider, rawTargets[t],
+                        CrossingKey(crossing) + "/trigger" + i + "/t" + t);
+            }
+
+            options.Sort(delegate(CrossingTraversalOption a, CrossingTraversalOption b)
+            {
+                int status = CrossingPathRank(a.PathStatus).CompareTo(CrossingPathRank(b.PathStatus));
+                if (status != 0) return status;
+                int route = a.RouteLength.CompareTo(b.RouteLength);
+                return route != 0 ? route : string.Compare(a.StableKey, b.StableKey, StringComparison.Ordinal);
+            });
+            return options;
+        }
+
+        private static void TryAddCrossingTraversalTarget(List<CrossingTraversalOption> options, Vector3 start,
+            Collider collider, Vector3 rawTarget, string stableKey)
+        {
+            NavMeshHit targetHit;
+            if (!NavMesh.SamplePosition(rawTarget, out targetHit, 2.5f, NavMesh.AllAreas)) return;
+            for (int i = 0; i < options.Count; i++)
+                if (HorizontalDistance(options[i].Target, targetHit.position) <= ApproachDedupDistance) return;
+
+            NavMeshPath path = new NavMeshPath();
+            if (!NavMesh.CalculatePath(start, targetHit.position, NavMesh.AllAreas, path) ||
+                path.status == NavMeshPathStatus.PathInvalid || path.corners == null || path.corners.Length < 2) return;
+            if (!PathIntersectsTrigger(path.corners, collider)) return;
+
+            options.Add(new CrossingTraversalOption(targetHit.position, stableKey, collider.GetType().Name,
+                path.status, RouteLength(path.corners), DistanceToCollider(start, collider)));
+        }
+
+        private static bool PathIntersectsTrigger(Vector3[] corners, Collider collider)
+        {
+            if (collider == null || corners == null || corners.Length == 0) return false;
+            if (PointInsideCollider(collider, corners[0])) return true;
+            for (int i = 1; i < corners.Length; i++)
+            {
+                Vector3 start = corners[i - 1];
+                Vector3 delta = corners[i] - start;
+                float distance = delta.magnitude;
+                if (distance <= 0.001f) continue;
+                RaycastHit hit;
+                try
+                {
+                    if (collider.Raycast(new Ray(start, delta / distance), out hit, distance + 0.05f)) return true;
+                }
+                catch { }
+                if (PointInsideCollider(collider, corners[i])) return true;
+            }
+            return false;
+        }
+
+        private static bool PointInsideCollider(Collider collider, Vector3 point)
+        {
+            if (collider == null) return false;
+            Vector3 closest = ClosestPoint(collider, point);
+            return Vector3.Distance(closest, point) <= 0.05f;
+        }
+
+        private static Vector3 ClosestPoint(Collider collider, Vector3 point)
+        {
+            if (collider == null) return point;
+            try { return collider.ClosestPoint(point); }
+            catch { return collider.bounds.ClosestPoint(point); }
+        }
+
+        private static float DistanceToCollider(Vector3 point, Collider collider)
+        {
+            if (collider == null) return float.MaxValue;
+            return HorizontalDistance(point, ClosestPoint(collider, point));
+        }
+
+        private static int CrossingPathRank(NavMeshPathStatus status)
+        {
+            return status == NavMeshPathStatus.PathComplete ? 0 : (status == NavMeshPathStatus.PathPartial ? 1 : 2);
         }
 
         internal static string CrossingKey(Zoneline crossing)
