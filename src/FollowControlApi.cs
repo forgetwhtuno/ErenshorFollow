@@ -1,3 +1,5 @@
+using ForgottenRoads.StandaloneUi;
+
 namespace ErenshorFollow
 {
     public sealed class FollowControlState
@@ -22,8 +24,8 @@ namespace ErenshorFollow
     {
         public const int ApiVersion = 1;
         public const string ModuleId = "follow";
-        public static bool HasDedicatedPanel { get { return false; } }
-        public static bool IsPanelOpen { get { return false; } }
+        public static bool HasDedicatedPanel { get { return true; } }
+        public static bool IsPanelOpen { get { return StandaloneFallbackUi.IsOpen; } }
 
         public static FollowControlState GetBasicState()
         {
@@ -67,7 +69,7 @@ namespace ErenshorFollow
         public static bool TryResumeExpedition() { return ExpeditionCoordinator.IsActive && Queue(3); }
         public static bool TryCancelExpedition() { return ExpeditionCoordinator.IsActive && Queue(4); }
         public static bool TryReturn() { return ExpeditionCoordinator.CanReturn() && Queue(5); }
-        public static bool OpenPanel() { return false; }
-        public static bool ClosePanel() { return false; }
+        public static bool OpenPanel() { return StandaloneFallbackUi.Open(); }
+        public static bool ClosePanel() { StandaloneFallbackUi.Close(); FollowUiSurfaceRouter.CloseAllVisuals(); return true; }
     }
 }

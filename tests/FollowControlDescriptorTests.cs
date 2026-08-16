@@ -30,8 +30,8 @@ namespace ErenshorFollow
             failed += Check("no private or secret fields exposed",
                 !FollowSuiteDescriptorPolicy.ContainsSensitiveFieldName(describe) &&
                 !FollowSuiteDescriptorPolicy.ContainsSensitiveFieldName(FollowSuiteDescriptorPolicy.BuildDeveloperSettings(true)));
-            failed += Check("safe action allowlist advertises contextual close",
-                Field(describe, "actions") == "closePanel,stop,pauseExpedition,resumeExpedition,cancelExpedition,return");
+            failed += Check("safe action allowlist advertises fallback open and contextual close",
+                Field(describe, "actions") == "openPanel,closePanel,stop,pauseExpedition,resumeExpedition,cancelExpedition,return");
 
             SuiteHubPresenceState ordinary = SuiteHubPresencePolicy.Parse(
                 "protocol=1&module=suitehub&status=Ready&uiAvailable=true&quickCloseContract=1&quickClose=0");

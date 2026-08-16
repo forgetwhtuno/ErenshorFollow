@@ -24,6 +24,9 @@ try {
     $lines = @('/nologo', '/target:library', '/optimize+', ('/out:"{0}"' -f $builtDll))
     $refs | ForEach-Object { $lines += ('/reference:"{0}"' -f $_) }
     Get-ChildItem -LiteralPath (Join-Path $ScriptRoot 'src') -Filter '*.cs' | Sort-Object Name | ForEach-Object { $lines += ('"' + $_.FullName + '"') }
+    $fallbackUi = Join-Path $ProjectRoot 'Erenshor-Mod-Suite\shared\ErenshorSuite.UI\StandaloneFallbackUi.cs'
+    if (-not (Test-Path -LiteralPath $fallbackUi)) { throw "Missing shared standalone UI source: $fallbackUi" }
+    $lines += ('"' + $fallbackUi + '"')
     $lines | Set-Content -LiteralPath $rsp -Encoding ASCII
     Write-Host "Building current local Follow source against $managed" -ForegroundColor Cyan
     Write-Host "Lunaris references: $LunarisLibDir" -ForegroundColor Cyan

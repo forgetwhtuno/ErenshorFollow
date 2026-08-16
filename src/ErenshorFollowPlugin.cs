@@ -3,6 +3,7 @@ using Lunaris;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using ForgottenRoads.StandaloneUi;
 
 namespace ErenshorFollow
 {
@@ -63,6 +64,14 @@ namespace ErenshorFollow
             Logging.LogInfo("Erenshor Follow " + PluginVersion + " loaded. Sim Actions retained UI revision=" +
                 SimActionMenuLayoutPolicy.UiRevision + ". Use /efollow <SimName>, /efollow status, /efollow ui, or /efollow off. /dsfollow is also accepted for compatibility.");
             Logging.LogInfo("Sim-Led Expeditions available: /expedition status|diag|pause|resume|cancel|return.");
+            StandaloneFallbackUi.Initialize(this, "follow", "FOLLOW",
+                "Select a local party Sim to open Sim Actions and create a Follow or Expedition session.", 240f,
+                FollowControlApi.GetStatus,
+                new FallbackAction("Stop Travel", FollowControlApi.TryStop, null),
+                new FallbackAction("Pause Expedition", FollowControlApi.TryPauseExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Resume Expedition", FollowControlApi.TryResumeExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Cancel Expedition", FollowControlApi.TryCancelExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Return", FollowControlApi.TryReturn, delegate { return FollowControlApi.GetBasicState().CanReturn; }));
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -125,12 +134,14 @@ namespace ErenshorFollow
                 // "Changing zones / Reacquiring". It remains presentation-only.
                 TravelStatusOverlay.Tick();
                 FollowUiSurfaceRouter.TickLocalEscapeFallback();
+                StandaloneFallbackUi.Tick(SuiteUiPolicy.IsGameplayReady());
             }
             catch (Exception ex) { Logging.LogError("Follow retained UI update failed: " + ex); }
         }
 
         private void OnDestroy()
         {
+            StandaloneFallbackUi.Dispose();
             try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
             _auraProvider = null;
             try { SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }

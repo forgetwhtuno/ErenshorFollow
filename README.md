@@ -51,7 +51,7 @@ At leg start, Follow releases only the selected Sim's previous guard/follow post
 
 During a native scene transition the status panel remains visible as presentation-only UI and reports **Changing zones... Reacquiring <leader>...** while the coordinator waits for Erenshor to rebuild the exact tracked Sim. After every successful reacquisition the final-destination route is recalculated rather than blindly consuming a stale itinerary. At arrival the panel becomes **EXPEDITION COMPLETE** and shows **Return** only when the verified route/leader record supports it, and **Camp Here** only when the optional Campmaster capability is actually available.
 
-Closing the setup cancels planning only. Closing or Escape-hiding the expedition status **never cancels the expedition**; runtime travel continues and status can be reopened from Sim Actions. There is no standalone Follow launcher and no normal-access global UI hotkey. The three Follow-owned retained surfaces advertise one aggregate `ui.state`/`closePanel` contract, with the topmost surface chosen by sort order + activation. Local Escape is only the fallback when verified Suite quick-close is unavailable. The travel overlay position remains persisted as normalized bottom-left `UI/OverlayPositionX/Y`; old pixel offset values remain load-compatible but are not reinterpreted as normalized coordinates. Verbose click/route diagnostics are controlled by `Diagnostics/Verbose`.
+Closing the setup cancels planning only. Closing or Escape-hiding the expedition status **never cancels the expedition**; runtime travel continues and status can be reopened from Sim Actions. There is no global Follow UI hotkey. A small shared retained fallback entry point is automatically visible when Forgotten Roads Hub is absent/unavailable and hides while a healthy Hub owns primary access. The three Follow-owned retained surfaces advertise one aggregate `ui.state`/`closePanel` contract, with the topmost surface chosen by sort order + activation. Local Escape is only the fallback when verified Suite quick-close is unavailable. The travel overlay position remains persisted as normalized bottom-left `UI/OverlayPositionX/Y`; old pixel offset values remain load-compatible but are not reinterpreted as normalized coordinates. Verbose click/route diagnostics are controlled by `Diagnostics/Verbose`.
 
 
 ### Native party-command menu vs Follow Sim Actions
@@ -113,7 +113,7 @@ Lunaris installed in your Erenshor install. The compiled DLL is placed directly 
 
 ## Development note
 
-This project has been developed heavily with AI-assisted coding tools. The goal has been to build features I wanted to use in Erenshor, with development guided through design, testing, playtesting, audits, and iteration against the game. Bug reports, code review, corrections, and contributions from experienced Erenshor modders are welcome.
+The goal is to build features for Erenshor, with development guided through design, testing, playtesting, audits, and iteration against the game. Bug reports, code review, corrections, and contributions from experienced Erenshor modders are welcome.
 
 This is an unofficial, community-made mod for Erenshor and is not affiliated with or endorsed by the game's developer.
 
@@ -122,7 +122,7 @@ This is an unofficial, community-made mod for Erenshor and is not affiliated wit
 
 Forgotten Roads Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `FollowControlApi` surface. The mod remains independently usable without the Hub and does not compile against Hub types or assume Hub load order.
 
-Follow keeps its contextual Sim action menu and travel overlay rather than adding a general module panel or launcher. `/efollow`, `/elead`, and `/expedition` remain available standalone.
+Follow keeps its contextual Sim action menu and travel overlay rather than inventing a second gameplay panel. The shared Hub-aware fallback entry point provides mouse discoverability when Hub is absent/unavailable; `/efollow`, `/elead`, and `/expedition` remain compatibility controls.
 
 Hub can show current Follow/Lead/Expedition state and expose Stop plus the existing expedition pause/resume/cancel/return actions. Its Developer settings tier may also toggle the existing `Diagnostics/Verbose` setting; overlay coordinates remain owned by Follow's contextual UI rather than becoming Hub controls. The optional Aura surface also provides `ui.state` and `closePanel` for the contextual Sim Actions menu so the shared quick-close owner can close it without a second Escape hook. Erenshor remains authoritative for movement, NavMesh, zonelines, scene changes, combat, and identity.
 
