@@ -16,7 +16,7 @@ namespace ErenshorFollow
     {
         internal const string PluginGuid = "forgetwhtuno.erenshor.follow";
         internal const string PluginName = "Erenshor Follow";
-        internal const string PluginVersion = "0.5.0";
+        internal const string PluginVersion = "0.6.4";
         internal static ErenshorFollowPlugin Instance;
         internal static bool VerboseDiagnostics { get; private set; }
 
@@ -24,6 +24,7 @@ namespace ErenshorFollow
         internal FollowSettings Settings;
         private int _pendingControlAction;
         private FollowSuiteAuraProvider _auraProvider;
+        internal bool SuiteQuickCloseProviderRegistered { get { return _auraProvider != null && _auraProvider.Registered; } }
 
         private void Awake()
         {
@@ -37,8 +38,16 @@ namespace ErenshorFollow
 
             CoopCompatibility.Initialize();
             ExpeditionIntegrationBridge.Initialize();
+            SuiteUiPolicy.InitializeHubPresence(this);
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll();
+            if (!ExpeditionDoGuardPatch.ShapeVerified)
+                Logging.LogWarning("Expedition movement ownership patch unavailable: SimPlayer.DoGuard() shape was not verified; native guard AI remains untouched.");
+            if (!FollowCameraUsingUiPatch.ShapeVerified)
+                Logging.LogWarning("Follow retained-UI camera containment unavailable: " +
+                    (string.IsNullOrWhiteSpace(FollowCameraCompatibility.LastFailure) ?
+                        "verified CameraController.UsingUI boundary was not proven" : FollowCameraCompatibility.LastFailure) +
+                    "; no alternate camera patch was installed.");
             DisableEmbeddedDeepSimsFollow();
             SceneManager.sceneLoaded += OnSceneLoaded;
             try
@@ -51,12 +60,19 @@ namespace ErenshorFollow
                 try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
                 Logging.LogWarning("Suite Aura provider registration failed: " + ex.GetType().Name);
             }
-            Logging.LogInfo("Erenshor Follow loaded. Use /efollow <SimName> or /efollow off. /dsfollow is also accepted for compatibility.");
-            Logging.LogInfo("Sim-Led Expeditions available: /expedition status|pause|resume|cancel|return.");
+            Logging.LogInfo("Erenshor Follow " + PluginVersion + " loaded. Sim Actions retained UI revision=" +
+                SimActionMenuLayoutPolicy.UiRevision + ". Use /efollow <SimName>, /efollow status, /efollow ui, or /efollow off. /dsfollow is also accepted for compatibility.");
+            Logging.LogInfo("Sim-Led Expeditions available: /expedition status|diag|pause|resume|cancel|return.");
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
+            // Context/setup windows are scene-local workflows. Expedition Status is intentionally retained
+            // across native zoning and will show transition/reacquisition state without controlling zoning.
+            try { SimActionMenu.ForceCloseForLifecycle(); } catch { }
+            try { ExpeditionSetupWindow.ForceCloseForLifecycle(); } catch { }
+            try { TravelStatusOverlay.CancelDragGesture(); } catch { }
+            try { FollowUiDragGuard.ForceReleaseIfOwned(); } catch { }
             try { ExpeditionCoordinator.HandleSceneLoaded(scene); }
             catch (Exception ex) { Logging.LogError("Expedition scene handling failed: " + ex); }
         }
@@ -94,25 +110,23 @@ namespace ErenshorFollow
             }
             try
             {
-                if (SuiteUiPolicy.IsGameplayReady()) SimActionMenu.Tick();
+                if (SuiteUiPolicy.IsGameplayReady())
+                {
+                    SimActionMenu.Tick();
+                    ExpeditionSetupWindow.Tick();
+                }
                 else
                 {
                     SimActionMenu.ForceCloseForLifecycle();
-                    TravelStatusOverlay.CancelDragGesture();
+                    ExpeditionSetupWindow.ForceCloseForLifecycle();
                 }
-            }
-            catch (Exception ex) { Logging.LogError("Sim action menu update failed: " + ex); }
-        }
 
-        private void OnGUI()
-        {
-            try
-            {
-                if (!SuiteUiPolicy.IsGameplayReady()) return;
-                TravelStatusOverlay.Draw();
-                SimActionMenu.Draw();
+                // Expedition status is allowed to survive native zoning so the player can see
+                // "Changing zones / Reacquiring". It remains presentation-only.
+                TravelStatusOverlay.Tick();
+                FollowUiSurfaceRouter.TickLocalEscapeFallback();
             }
-            catch (Exception ex) { Logging.LogError("Follow UI draw failed: " + ex); }
+            catch (Exception ex) { Logging.LogError("Follow retained UI update failed: " + ex); }
         }
 
         private void OnDestroy()
@@ -126,7 +140,12 @@ namespace ErenshorFollow
             if (_harmony != null) _harmony.UnpatchSelf();
             CoopCompatibility.Reset();
             ExpeditionIntegrationBridge.Reset();
+            ExpeditionPhaseTelemetry.Reset();
+            ExpeditionMovementTelemetry.Reset();
+            FollowUiDragGuard.ForceReleaseIfOwned();
             SimActionMenu.DisposeForLifecycle();
+            ExpeditionSetupWindow.DisposeForLifecycle();
+            SuiteQuickCloseCompatibility.Reset();
             TravelStatusOverlay.ResetForLifecycle();
             _pendingControlAction = 0;
             SuiteUiPolicy.Reset();
@@ -181,6 +200,11 @@ namespace ErenshorFollow
         internal void LogError(string message)
         {
             Logging.LogError(message);
+        }
+
+        internal void LogInfo(string message)
+        {
+            Logging.LogInfo(message);
         }
 
         internal void LogDebug(string message)
@@ -255,9 +279,20 @@ namespace ErenshorFollow
                 StopAllTravel("[Erenshor Follow] Following stopped.", "yellow");
                 return true;
             }
+            if (argument.Equals("ui", StringComparison.OrdinalIgnoreCase))
+            {
+                Chat(SimActionMenu.DiagnosticStatus(), "lightblue");
+                return true;
+            }
+            if (argument.Equals("status", StringComparison.OrdinalIgnoreCase) ||
+                argument.Equals("diag", StringComparison.OrdinalIgnoreCase))
+            {
+                Chat(FollowController.DiagnosticsStatus(), "lightblue");
+                return true;
+            }
             if (argument.Length == 0)
             {
-                Chat("[Erenshor Follow] Usage: /efollow <SimName> or /efollow off", "yellow");
+                Chat("[Erenshor Follow] Usage: /efollow <SimName>, /efollow status, /efollow ui, or /efollow off", "yellow");
                 return true;
             }
 
@@ -272,7 +307,7 @@ namespace ErenshorFollow
             }
             LeaderController.Stop(null);
             FollowController.Start(target, FollowController.ReadName(target));
-            Chat("[Erenshor Follow] Following " + FollowController.TargetName + ". Press WASD, Space, or click to stop.", "lightblue");
+            Chat("[Erenshor Follow] Following " + FollowController.TargetName + ". Press a movement key to take over and stop.", "lightblue");
             return true;
         }
 
@@ -334,6 +369,15 @@ namespace ErenshorFollow
                 }
                 return;
             }
+            if (value.Equals("diag", StringComparison.OrdinalIgnoreCase) || value.Equals("diagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                Chat(ExpeditionCoordinator.Status(), "lightblue");
+                Chat(ExpeditionCoordinator.Diagnostics(), "lightblue");
+                Chat(ZoneAtlasRoutePlanner.DescribeDiscovery(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name,
+                    ExpeditionDestinationResolver.ListCanonicalNames()), "lightblue");
+                Chat(LeaderController.MovementDiagnostics(), "lightblue");
+                return;
+            }
             if (value.Equals("pause", StringComparison.OrdinalIgnoreCase) || value.Equals("hold", StringComparison.OrdinalIgnoreCase))
             {
                 ExpeditionCoordinator.Pause(ExpeditionPauseReason.PlayerRequest);
@@ -360,7 +404,7 @@ namespace ErenshorFollow
                 ExpeditionCoordinator.TryReturn();
                 return;
             }
-            Chat("[Erenshor Expedition] Usage: /expedition status, pause, resume, cancel, or return.", "yellow");
+            Chat("[Erenshor Expedition] Usage: /expedition status, diag, pause, resume, cancel, or return.", "yellow");
         }
 
         private void HandleExpeditionControlPhrase(string phrase)
@@ -436,23 +480,34 @@ namespace ErenshorFollow
         internal static SimPlayer FindSim(string requested, out bool ambiguous)
         {
             ambiguous = false;
+            if (string.IsNullOrWhiteSpace(requested)) return null;
+            string query = requested.Trim();
             SimPlayer[] sims = UnityEngine.Object.FindObjectsOfType<SimPlayer>();
+            SimPlayer exact = null;
             SimPlayer partial = null;
+            int exactCount = 0;
+            int partialCount = 0;
             foreach (SimPlayer sim in sims)
             {
-                if (!FollowController.IsUsableSim(sim) || CoopCompatibility.IsRemoteHuman(sim)) continue;
+                if (!FollowController.IsUsableSim(sim) || CoopCompatibility.IsRemoteHuman(sim) ||
+                    !LeaderController.IsPlayerPartySim(sim)) continue;
                 string name = FollowController.ReadName(sim);
-                if (name.Equals(requested, StringComparison.OrdinalIgnoreCase)) return sim;
-                if (name.IndexOf(requested, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                if (partial != null)
+                if (name.Equals(query, StringComparison.OrdinalIgnoreCase))
                 {
-                    ambiguous = true;
-                    partial = null;
+                    exactCount++;
+                    if (exact == null) exact = sim;
                     continue;
                 }
-                if (!ambiguous) partial = sim;
+                if (name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                partialCount++;
+                if (partial == null) partial = sim;
             }
-            return ambiguous ? null : partial;
+
+            FollowNameMatchDecision decision = FollowNameMatchPolicy.Evaluate(exactCount, partialCount);
+            if (decision == FollowNameMatchDecision.Ambiguous) { ambiguous = true; return null; }
+            if (decision == FollowNameMatchDecision.Exact) return exact;
+            if (decision == FollowNameMatchDecision.Partial) return partial;
+            return null;
         }
 
         private static void ClearInput(TypeText typeText)

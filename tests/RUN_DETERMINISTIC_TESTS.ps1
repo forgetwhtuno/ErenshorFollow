@@ -46,6 +46,26 @@ Invoke-StandaloneSuite "FollowRebindPolicyTests" @(
     (Join-Path $scriptRoot "FollowRebindPolicyTests.cs")
 ) $csc
 
+Invoke-StandaloneSuite "FollowNameMatchPolicyTests" @(
+    (Join-Path $repoRoot "src\FollowNameMatchPolicy.cs"),
+    (Join-Path $scriptRoot "FollowNameMatchPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "FollowZoneHandoffPolicyTests" @(
+    (Join-Path $repoRoot "src\FollowZoneHandoffPolicy.cs"),
+    (Join-Path $scriptRoot "FollowZoneHandoffPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "FollowStuckRecoveryPolicyTests" @(
+    (Join-Path $repoRoot "src\FollowStuckRecoveryPolicy.cs"),
+    (Join-Path $scriptRoot "FollowStuckRecoveryPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "FollowCombatPolicyTests" @(
+    (Join-Path $repoRoot "src\FollowCombatPolicy.cs"),
+    (Join-Path $scriptRoot "FollowCombatPolicyTests.cs")
+) $csc
+
 Invoke-StandaloneSuite "RouteCandidatePolicyTests" @(
     (Join-Path $repoRoot "src\RouteCandidatePolicy.cs"),
     (Join-Path $scriptRoot "RouteCandidatePolicyTests.cs")
@@ -53,7 +73,50 @@ Invoke-StandaloneSuite "RouteCandidatePolicyTests" @(
 
 Invoke-StandaloneSuite "FollowControlDescriptorTests" @(
     (Join-Path $repoRoot "src\FollowSuiteDescriptorPolicy.cs"),
+    (Join-Path $repoRoot "src\SuiteUiPolicies.cs"),
     (Join-Path $scriptRoot "FollowControlDescriptorTests.cs")
+) $csc
+
+
+Invoke-StandaloneSuite "SimActionMenuLayoutPolicyTests" @(
+    (Join-Path $repoRoot "src\SimActionMenuLayoutPolicy.cs"),
+    (Join-Path $scriptRoot "SimActionMenuLayoutPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionMovementPolicyTests" @(
+    (Join-Path $repoRoot "src\ExpeditionMovementPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionMovementPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionMovementOwnershipPolicyTests" @(
+    (Join-Path $repoRoot "src\ExpeditionMovementOwnershipPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionMovementOwnershipPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionCrossingPolicyTests" @(
+    (Join-Path $repoRoot "src\ExpeditionCrossingPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionCrossingPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionRouteGraphTests" @(
+    (Join-Path $repoRoot "src\ZoneRouteGraphPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionRouteGraphTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionWorkflowTests" @(
+    (Join-Path $repoRoot "src\ExpeditionModels.cs"),
+    (Join-Path $repoRoot "src\ExpeditionWorkflowPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionWorkflowTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionTelemetryPolicyTests" @(
+    (Join-Path $repoRoot "src\ExpeditionTelemetryPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionTelemetryPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "PostZoneRouteReadinessPolicyTests" @(
+    (Join-Path $repoRoot "src\PostZoneRouteReadinessPolicy.cs"),
+    (Join-Path $scriptRoot "PostZoneRouteReadinessPolicyTests.cs")
 ) $csc
 
 Write-Host "Erenshor Follow deterministic suites: ALL PASS" -ForegroundColor Green

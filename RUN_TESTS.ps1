@@ -40,4 +40,7 @@ if ($LASTEXITCODE -ne 0) { throw "Follow command/rebind deterministic tests fail
 & (Join-Path $root "tests\RUN_UI_CAMP_HANDOFF_TESTS.ps1") -CscPath $csc
 if ($LASTEXITCODE -ne 0) { throw "Follow UI/Camp handoff deterministic tests failed." }
 
+& (Join-Path $root "tests\RUN_RELEASE_STATIC_TESTS.ps1")
+if ($LASTEXITCODE -ne 0) { throw "Follow release static tests failed." }
+
 Write-Host "Erenshor Follow consolidated deterministic tests: ALL PASS" -ForegroundColor Green

@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.6.4 - RC telemetry defaults
+
+- Keeps movement writer/NavMesh/animation heartbeats and detailed route phases behind the existing explicit Verbose diagnostics setting.
+- Retains bounded default lifecycle evidence for expedition failure, cancellation, arrival, and exact leader reacquisition.
+- Adds deterministic telemetry policy tests; Expedition movement, ownership, crossing, and reacquisition behavior is otherwise unchanged.
+
+## 0.6.3 — Expedition movement ownership and locomotion repair
+
+- Added a narrow, exact-leader Harmony prefix for verified `SimPlayer.DoGuard()` contention. Vanilla Guard is suppressed only while an active Expedition owns ordinary pre-crossing travel; combat, holds, regroup, native party commands, crossing/zoning and every non-leader Sim remain native.
+- Kept `AssignGuardSpot` as the selected Sim's grouped-travel mode while suppressing its competing periodic Guard writer; this prevents both native stop/idle resets and the double-`randomizeOffset` destination rewrite during owned travel.
+- Added an ownership-aware NavMesh movement adapter that restores usable native run speed, un-stops the exact leader, and sets `Walking`/`Patrol` only from actual agent velocity/desired velocity/position delta. The adapter releases before crossing/native zoning and failed order acquisition; no transform movement, Warp, teleport, or manual scene loading was added.
+- Added owner/order generations plus bounded change-only movement telemetry and a one-second heartbeat only while stalled, including Guard/native NavMesh/animation/combat/crossing state.
+- Preserved native Group Guard/Follow/Run Away results instead of immediately overwriting them; Expedition pauses/yields and only explicit/current policy can reacquire travel.
+- Added pure movement-ownership/speed/locomotion/generation tests and one-hop/multi-leg workflow advancement coverage.
+- Normalized Follow retained drag ownership to left-button pointer-down acquisition, physical/focus/pause/lifecycle cleanup and prior-native-state restoration. Added the verified monotonic `CameraController.UsingUI()` postfix for standalone modern-camera containment.
+- The DoGuard patch validates its exact zero-argument void shape. The camera patch performs the stronger current-runtime IL/member proof required by the Suite drag contract before applying. Either compatibility failure leaves native behavior unpatched.
+
+## 0.6.2 — Native Zoneline crossing handoff and bounded route recovery
+
+- Fixed the live final-boundary regression where a **Complete** approach route could stop roughly half a meter from a Zoneline and immediately fall into generic no-progress/candidate cycling. Complete routes now enter the same explicit crossing phase instead of being excluded from boundary handling.
+- Replaced AABB-only crossing distance checks with true trigger-shape distance via `Collider.ClosestPoint` (bounds remains exception fallback), eliminating false-near approach decisions on rotated/non-box trigger volumes.
+- Added bounded trigger traversal planning: after reaching the verified approach, the planner samples a few NavMesh targets that actually cross the selected live trigger and requires the path segments to intersect that trigger. The selected Sim receives the existing verified native movement order; no transform warp, `ZoneSim`, or scene-load call is used.
+- Added a read-only Harmony observation of `Zoneline.OnTriggerEnter` so the expedition can distinguish exact leader trigger entry, player trigger entry, and later `GameData.Zoning`. If the Sim zones first and its scene avatar is destroyed, the exact `SimPlayerTracking` identity is preserved for a bounded player-trigger handoff rather than being misclassified as ordinary leader loss.
+- During that leader-first gap, the existing player Follow movement owner may continue only toward the same already-proven through-trigger target for the bounded grace window. It drops immediately when the player's native trigger fires or `GameData.Zoning` begins; no scene transition or destination is synthesized.
+- Added one bounded event-time route re-sample after all pre-built geometry candidates fail. Movement-ownership failures do not use this geometry retry.
+- Added phase-boundary telemetry for command admission, leader validation, target/exit/candidate selection, approach reached, crossing attempt, trigger entered/not entered, native transition observation, destination scene, exact leader reacquisition, next-leg revalidation, arrival/failure/cancel. Telemetry is de-duplicated and does not log every frame.
+- Preserved Sim Actions retained UI revision 2 and its 236 px / 28 px / 3 px compact model; rows now explicitly set `flexibleHeight=0` so Unity cannot stretch them into blank space.
+- Added deterministic crossing-policy coverage plus release static assertions for true-shape crossing distance, trigger traversal, bounded retries, telemetry wiring, and forbidden teleport/manual-scene APIs.
+
+## 0.6.1 — Sim Actions retained-layout identification and sizing repair
+
+- Fixed the custom Follow **SIM ACTIONS** retained `VerticalLayoutGroup` so it actually controls child row heights. The previous `childControlHeight=false` setting allowed default RectTransform heights to override the 32 px model and could make the context surface look much larger than intended.
+- Tightened the custom context surface to a 236 px width, 28 px actions, 18 px status rows, smaller spacing/padding, and a 320 px scrolling cap while preserving the existing screen clamp and exact-clicked-Sim identity.
+- Added `/efollow ui` diagnostics and a visible startup revision marker so live tests can distinguish the Follow-owned custom context surface from Erenshor's separate native party-command stack.
+- Bumped the plugin version to **0.6.1** so Hub/runtime output can prove that this UI repair is actually installed.
+- No native party command, combat, grouping, route, zoning, or movement behavior changed.
+
+## Unreleased - Expedition destination / movement execution hardening
+
+- Made the retained **SIM ACTIONS** context surface content-driven again with action-count-driven height, bounded scrolling for genuinely long menus, visible X, and the existing screen clamp. The 0.6.1 sizing repair later tightened the final row/width metrics. Exact clicked `SimPlayer` identity remains the action target.
+- Fixed multi-zone atlas traversal so `ZoneAtlasEntry.NeighboringZones` is treated as authored adjacency even when only one endpoint records the relationship. The current scene's live usable `Zoneline` set still authorizes hop 1, and every later hop is re-planned/re-resolved after native zoning. No hardcoded zone list or scene-load path was added.
+- Hardened expedition departure so route geometry and movement ownership are separate proofs. The selected Sim now releases its prior guard/follow posture via `FreeFollow()`, receives the new `AssignGuardSpot`, resolves its native NPC through the previously verified `GetThisNPC()` accessor, and must accept `HighPriorityNavUpdate()` before the leg is considered ordered.
+- Added bounded startup movement acquisition: visible transform/distance/velocity progress proves execution; stopped agents, missing destinations, unavailable NPC ownership, disabled/off-NavMesh agents, and zero progress are diagnosed separately. Only `PathInvalid` is treated as route-candidate geometry; ownership/state failure no longer burns through every Complete approach candidate.
+- Added `/expedition diag` for concise atlas/live-first-hop/reachable-route, exact `SimPlayerTracking` rebind, and native NPC/NavMeshAgent movement telemetry. Diagnostics are command-triggered rather than emitted every frame.
+- Added deterministic policies/tests for compact Sim Actions sizing, asymmetric multi-hop atlas enumeration, stale live-leg authority, movement acquisition/reissue/failure, stopped/sitting startup behavior, and path-invalid candidate fallback.
+- No Sim task/sitting fields, `GroupFollow`, teleport, manual scene load, cross-scene object movement, or native combat movement ownership were added.
+
+## 0.6.0 — Expedition player workflow
+
+- Replaced the adjacent/command-oriented normal expedition entry flow with **Sim Actions → Create Expedition → dedicated retained-uGUI setup window**. Commands remain compatible/recovery surfaces.
+- Added a scrollable destination planner backed by the authored `ZoneAtlas`, organized into Nearby and Other Reachable Zones, with immediate route preview and transition count. Destinations are advertised only when the current candidate route begins through a verified live usable zoneline.
+- Start now revalidates the exact captured `SimPlayerTracking`, current avatar identity, living/local-party ownership, remote-COOP exclusion, current scene, atlas route, and live first leg before the coordinator owns travel.
+- Added a compact persistent Expedition Status surface with Traveling/Paused/Combat/Regrouping/Changing-zones states plus Pause, Resume, Cancel, verified Return, and capability-gated Camp Here. Closing or Escape-hiding status is presentation-only and never cancels runtime travel.
+- Kept Expedition Status visible across native zoning so it can report `Changing zones... Reacquiring <leader>...` while Erenshor owns the transition. Setup/context windows still close on lifecycle loss.
+- Recalculate the remaining route after every verified zone entry; every newly current leg must again resolve to a live, active, non-`RemoveParty` zoneline. No teleport, scene load, or synthetic zoning path was added.
+- Aggregated Sim Actions, Expedition Setup, and Expedition Status under the existing optional Suite `ui.state`/`closePanel` quick-close contract; the topmost Follow surface closes once per Escape while expedition runtime state remains intact.
+- Added pure deterministic route-graph and workflow-policy suites plus release source assertions covering multi-hop reachability, unavailable routes, exact identity/remote rejection, status controls, arrival capability gating, UI-close semantics, route recalculation, and unload cleanup wiring.
+
+## Unreleased - deep Follow / cross-zone playable-state hardening
+
+- Put direct cross-zone Follow continuation behind a new `Follow/ExperimentalCrossZoneFollow` setting that defaults OFF until the current installed build is compiled and live-verified. The implementation still observes only native `GameData.Zoning`; it never initiates a scene change or teleports an actor.
+- Hardened direct Follow's persistent identity lifecycle: only the originally captured `SimPlayerTracking` can resume after a native player zone transition, with the same real-group, living-avatar, exact-identity, and remote-COOP rejection guards on the far side.
+- Added a 2.5-second pre-zone handoff grace for the native ordering where a followed Sim's old avatar disappears immediately before the player's own zoneline trigger fires. The grace yields vanilla player control, preserves only the exact tracking identity, and cancels unless real `GameData.Zoning` begins or the exact local avatar returns.
+- Direct Follow now yields the `PlayerControl.LandMovement` patch during real combat and for a short post-combat safety window, allowing ordinary Erenshor combat movement to remain authoritative. Deliberate movement outside that combat handoff still cancels ordinary Follow.
+- Replaced the abrupt direct-Follow five-second stall cutoff with a bounded recovery policy: spaced route recomputes, a maximum of three recovery attempts, and a clean stop after a nine-second no-progress bound. No teleport/noclip fallback was added.
+- Avoided `CharacterController`/animation cleanup calls after native zoning begins; Follow now drops scene-bound movement references without touching player movement during game-owned transition teardown.
+- Made player death/unavailability an explicit direct-Follow stop reason and added concise `/efollow status` diagnostics for state, persistent identity, current avatar, party/COOP authority, scene, last repath, recovery attempts, cross-zone flag, and last stop reason.
+- Hardened expedition startup so a multi-zone trip cannot begin without a captured `SimPlayerTracking` that is actually present in `GameData.GroupMembers`.
+- Hardened expedition transitions to wait for the exact persistent leader identity after each native zone load instead of treating a settled scene alone as success. Late `MyAvatar` rebinding waits within the existing bounded timeout; party loss, remote authority, identity mismatch, death, and timeout fail closed.
+- Fixed final arrival so `Arrived` cannot be emitted if the tracked leader failed exact-identity reacquisition. Return-leader reacquisition uses the same identity guard.
+- Changed the bounded "group could not catch up" expedition outcome from terminal route failure to an explicit paused state; the player can regroup and `/expedition resume` or cancel.
+- Preserved explicit expedition pause state across an expected intermediate native zone transition; the next leg is rebuilt then immediately held until the player resumes, while final arrival clears stale pause state.
+- Typed Sim lookup now treats duplicate exact display names as ambiguous instead of selecting the first actor; click-based Sim Actions remain bound to the selected object.
+- Sim Actions now offers `Stop Following` for the exact current direct-Follow target, hides ordinary Follow while an expedition owns travel, and avoids a duplicate generic stop row.
+- Expanded the retained travel overlay with combat-recovery and safe-repath states.
+- Added deterministic pure-policy coverage for the experimental-zone gate, identity/rebind failures, bounded stuck recovery, and direct-Follow combat handoff.
+- No player/Sim teleport, `SceneChange.ChangeScene`, `ZoneSim`, `TravelToZone`, cross-scene pathfinding, party mutation, or new combat automation was introduced.
+
+## Unreleased - playable-state / retained Sim Actions pass
+
+- Replaced the remaining production IMGUI Sim Actions menu and travel-status overlay with compact retained uGUI using the established dark/cyan suite visual language. No second `EventSystem` is created.
+- Removed the legacy normal-access F8/middle-click UI path. Native local-party Sim clicks remain the contextual entry point, with commands preserved as recovery/compatibility access.
+- Added the shared optional `ui.state` + `closePanel` contract. Local Escape remains available unless a usable Hub advertises verified quick-close and Follow's own Aura provider registered successfully.
+- Restricted direct `/efollow <name>` lookup to verified living local-party Sims and continuously stop direct Follow if the actor dies, becomes remote-authority, or leaves the current party.
+- Release previous movement ownership before switching directly from one follow target to another.
+- Hide the retained travel overlay whenever gameplay readiness drops during zoning/character transitions instead of leaving a stale `DontDestroyOnLoad` surface visible.
+- Migrated retained UI persistence to normalized bottom-left coordinates while treating old pixel values as unset rather than mis-scaling them.
+- Added pure tests for Hub presence/quick-close gating, `ui.state`, local-party actor eligibility, legacy-position recovery, and descriptor action exposure.
+- No NavMesh route policy, zoneline authority, teleport behavior, expedition state machine, combat ownership, or remote-human admission was widened.
+
 ## 0.5.0 — Native Lunaris migration
 
 - Migrated off BepInEx 5 onto native Lunaris: `BaseUnityPlugin`/`[BepInPlugin]`/`[BepInProcess]`/
@@ -145,6 +235,8 @@ Future compatibility work may expose stable read-only travel lifecycle state and
 
 ## Unreleased - Suite UI/API coherence handoff
 
+- Isolated Sim Actions Escape ownership behind `SuiteQuickCloseCompatibility`: standalone Escape remains unchanged while the shared `ui.state`/verified `quickClose` wire contract is absent. The seam can defer local Escape once that capability is explicitly supplied, without adding a second Escape hook.
+- Exposed Sim Actions' local open/activation/close seam internally for future shared quick-close wiring. No launcher, navigation, NavMesh, zoneline, party/COOP eligibility, combat pause/resume, or teleport behavior changed.
 - Added optional, versioned `FollowControlApi` discovery/control surface for Suite Hub without a hard Hub dependency.
 - Kept standalone commands and core gameplay authority intact.
 - Documented the retained panel/launcher policy and Lunaris live-test requirement.

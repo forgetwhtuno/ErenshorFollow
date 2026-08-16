@@ -26,6 +26,7 @@ internal static class RouteCandidatePolicyTests
         Run("an accepted crossing is an accepted candidate", AcceptedCandidateIsDetected);
         Run("non-crossing execution failure does not claim a crossing", TravelExecutionFailureWording);
         Run("travel execution failure with blank reason has no empty parentheses", TravelExecutionBlankReason);
+        Run("crossing transition failure distinguishes trigger handoff from route approach", CrossingTransitionFailureWording);
         Run("no accepted route overrides any site classification", NoAcceptedRouteOverridesSiteKind);
         Run("an unclassified site with an accepted route degrades to travel execution", UnclassifiedSiteDegrades);
         Console.WriteLine("PASS: " + _passed + " route-candidate policy tests.");
@@ -218,6 +219,16 @@ internal static class RouteCandidatePolicyTests
             RouteCandidatePolicy.RouteFailureKind.TravelExecutionFailed, null);
         Require(message == "travel to Azure failed.", message);
         Require(message.IndexOf("()", StringComparison.Ordinal) < 0, "blank reason must not emit empty parentheses: " + message);
+    }
+
+    private static void CrossingTransitionFailureWording()
+    {
+        string message = RouteCandidatePolicy.DescribeRouteFailure("Bonepits",
+            RouteCandidatePolicy.RouteFailureKind.CrossingTransitionFailed,
+            "leader entered the approach but the native trigger did not fire");
+        Require(message.IndexOf("native crossing to Bonepits did not complete", StringComparison.OrdinalIgnoreCase) >= 0, message);
+        Require(message.IndexOf("no walkable route", StringComparison.OrdinalIgnoreCase) < 0, message);
+        Require(message.IndexOf("valid crossing approach", StringComparison.OrdinalIgnoreCase) < 0, message);
     }
 
     private static void NoAcceptedRouteOverridesSiteKind()

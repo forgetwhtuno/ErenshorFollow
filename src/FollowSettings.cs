@@ -3,10 +3,8 @@ using Lunaris.Config;
 
 namespace ErenshorFollow
 {
-    // Thin native-Lunaris settings holder plus a small ConfigEntry<T>-compatible wrapper so
-    // TravelStatusOverlay's existing .Value call sites needed no changes after the BepInEx
-    // ConfigFile.Bind migration. All 5 existing settings are preserved verbatim
-    // (section/key/default/description).
+    // Native-Lunaris settings holder. Legacy overlay offsets remain load-compatible; retained uGUI
+    // stores only normalized bottom-left coordinates and safely rejects old pixel values.
     internal sealed class FollowConfigEntry<T>
     {
         private readonly Func<T> _get;
@@ -36,15 +34,14 @@ namespace ErenshorFollow
         [Config("Verbose", "Diagnostics", "Enable detailed click/route diagnostics. Normal play keeps high-frequency action-menu logging quiet.")]
         public bool DiagnosticsVerbose = false;
 
-        // Defaults mirror TravelStatusOverlay's DefaultX/DefaultY constants. Under a fresh native
-        // Lunaris config these are the actual first-run position; the legacy
-        // OverlayOffsetX/Y-derived screen-relative migration in TravelStatusOverlay.EnsurePositionConfig
-        // is preserved unchanged but will not fire against a fresh config, since OverlayOffsetX/Y also
-        // start at their fresh Lunaris defaults (0f) in that case.
-        [Config("OverlayPositionX", "UI", "Travel panel X position in IMGUI screen coordinates. Drag the panel header to update it.")]
-        public float OverlayPositionX = 18f;
 
-        [Config("OverlayPositionY", "UI", "Travel panel Y position in IMGUI screen coordinates. Drag the panel header to update it.")]
-        public float OverlayPositionY = 140f;
+        [Config("ExperimentalCrossZoneFollow", "Follow", "OFF by default until live verification on the current game build. When enabled, direct Follow may preserve a SimPlayerTracking identity through a native player zone transition and reacquire that same party Sim on the far side. Never initiates zoning or teleports.")]
+        public bool ExperimentalCrossZoneFollow = false;
+
+        [Config("OverlayPositionX", "UI", "Retained-uGUI travel panel horizontal position normalized 0..1 from bottom-left. Legacy pixel values recover to the safe default.")]
+        public float OverlayPositionX = -1f;
+
+        [Config("OverlayPositionY", "UI", "Retained-uGUI travel panel vertical position normalized 0..1 from bottom-left. Legacy pixel values recover to the safe default.")]
+        public float OverlayPositionY = -1f;
     }
 }

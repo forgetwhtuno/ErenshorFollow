@@ -19,10 +19,13 @@ namespace ErenshorFollow
             TargetLeftParty,
             TargetRemote,
             TargetIdentityMismatch,
-            ZoneRebindTimeout
+            ZoneRebindTimeout,
+            ZoneHandoffTimeout,
+            ZoneContinuationDisabled,
+            PlayerUnavailable
         }
 
-        internal enum DriveState { Idle, Waiting, Turning, Moving, PartialPathRetry, NoProgress, RebindingAfterZoneChange }
+        internal enum DriveState { Idle, Waiting, Turning, Moving, PartialPathRetry, NoProgress, RecoveryRepath, PausedForCombat, RecoveringAfterCombat, AwaitingNativeZoneChange, RebindingAfterZoneChange }
         internal struct StatusSnapshot
         {
             internal readonly bool Active;
@@ -60,16 +63,25 @@ namespace ErenshorFollow
         private static CharacterController _drivenController;
         private static int _targetValidFrame = -1;
         private static bool _targetValidCache;
+        private static FollowActorEligibility _targetEligibilityCache = FollowActorEligibility.MissingOrDead;
         private static string _followScene;
         private static string _zoneOriginScene;
         private static float _rebindStartedAt;
         private static float _rebindReadySince;
+        private static float _zoneHandoffStartedAt;
+        private static int _recoveryAttempts;
+        private static float _nextRecoveryAt;
+        private static float _lastPathAttemptAt;
+        private static bool _combatPaused;
+        private static float _combatClearSince;
+        private static bool _expeditionCrossingHandoff;
+        private static Vector3 _expeditionCrossingTarget;
+        private static float _expeditionCrossingUntil;
 
         private const float StopDistance = 3.0f;
         private const float ResumeDistance = 4.5f;
         private const float ProgressDistance = 0.2f;
         private const float RouteRetrySeconds = 3f;
-        private const float NoProgressFailureSeconds = 5f;
         // Match the already-proven Expedition transition lifecycle rather than assuming sceneLoaded means
         // the game's group/avatar state is ready on that frame.
         private const float RebindSettleSeconds = 2.5f;
@@ -98,7 +110,12 @@ namespace ErenshorFollow
             {
                 if (_directFollowIntent)
                 {
-                    if (!BeginZoneRebind())
+                    if (!CrossZoneContinuationEnabled())
+                    {
+                        Notify("[Erenshor Follow] Direct cross-zone continuation is experimental and currently OFF. Following stopped for this native zone change.", "yellow");
+                        Stop(StopReason.ZoneContinuationDisabled);
+                    }
+                    else if (!BeginZoneRebind())
                     {
                         Notify("[Erenshor Follow] The target has no persistent Sim tracking identity, so Follow cannot safely continue across this zone change.", "yellow");
                         Stop(StopReason.TargetUnavailable);
@@ -106,6 +123,19 @@ namespace ErenshorFollow
                 }
                 // Do not validate or drive a scene-bound avatar while the game owns a zone transition.
                 // Expedition/Lead will tear down its own Follow leg through its existing lifecycle.
+                return;
+            }
+
+            if (_expeditionCrossingHandoff)
+            {
+                // The expedition leader may already have been destroyed by its own native Zoneline
+                // trigger. During this tiny bounded gap, Continue-To-Crossing drives only the player
+                // toward the exact traversal target that was already proven through that live trigger.
+                // It never infers a zone or survives into GameData.Zoning.
+                if (Time.time >= _expeditionCrossingUntil || GameData.InCombat || !IsLocalPlayerAvailable())
+                {
+                    Stop(GameData.InCombat ? StopReason.Explicit : StopReason.RouteUnavailable);
+                }
                 return;
             }
 
@@ -118,7 +148,27 @@ namespace ErenshorFollow
                 return;
             }
 
-            if (!IsTargetValid()) Stop(StopReason.TargetUnavailable);
+            if (_directFollowIntent && State == DriveState.AwaitingNativeZoneChange)
+            {
+                TickZoneHandoff();
+                return;
+            }
+
+            if (!IsTargetValid())
+            {
+                if (_directFollowIntent && TryBeginZoneHandoff()) return;
+                StopInvalidTarget();
+                return;
+            }
+
+            if (_directFollowIntent && !IsLocalPlayerAvailable())
+            {
+                Notify("[Erenshor Follow] Following stopped because the player is unavailable or dead.", "yellow");
+                Stop(StopReason.PlayerUnavailable);
+                return;
+            }
+
+            if (_directFollowIntent && UpdateDirectCombatPause()) return;
         }
 
         internal static StatusSnapshot GetStatusSnapshot()
@@ -128,6 +178,11 @@ namespace ErenshorFollow
 
         internal static void Start(SimPlayer target, string name)
         {
+            // Switching a live follow target must release the previous CharacterController/moving
+            // state before ownership is rebound to the new Sim.
+            if (FollowStartTransitionPolicy.ShouldReleaseMovementBeforeStart(_active)) RestoreMovementState();
+            _drivenPlayer = null;
+            _drivenController = null;
             _target = target;
             TargetName = string.IsNullOrWhiteSpace(name) ? (target == null || target.gameObject == null ? "the selected Sim" : target.gameObject.name) : name;
             _nextPathTime = 0f;
@@ -148,6 +203,15 @@ namespace ErenshorFollow
             _zoneOriginScene = null;
             _rebindStartedAt = 0f;
             _rebindReadySince = 0f;
+            _zoneHandoffStartedAt = 0f;
+            _recoveryAttempts = 0;
+            _nextRecoveryAt = 0f;
+            _lastPathAttemptAt = 0f;
+            _combatPaused = false;
+            _combatClearSince = 0f;
+            _expeditionCrossingHandoff = false;
+            _expeditionCrossingTarget = Vector3.zero;
+            _expeditionCrossingUntil = 0f;
 
             // LeaderController sets its leg active before it calls FollowController.Start(), so this cleanly
             // distinguishes ordinary /efollow from the existing Lead/Expedition movement substrate without
@@ -159,9 +223,42 @@ namespace ErenshorFollow
                 DirectIntent.Cancel();
         }
 
+        internal static bool BeginExpeditionCrossingHandoff(Vector3 target, float durationSeconds)
+        {
+            if (!_active || !LeaderController.ExpeditionOwned || GameData.Zoning) return false;
+            if (float.IsNaN(target.x) || float.IsNaN(target.y) || float.IsNaN(target.z) ||
+                float.IsInfinity(target.x) || float.IsInfinity(target.y) || float.IsInfinity(target.z)) return false;
+            if (durationSeconds <= 0f) return false;
+
+            _target = null;
+            _targetValidFrame = -1;
+            _targetValidCache = false;
+            _targetEligibilityCache = FollowActorEligibility.MissingOrDead;
+            _directFollowIntent = false;
+            DirectIntent.Cancel();
+            _expeditionCrossingHandoff = true;
+            _expeditionCrossingTarget = target;
+            _expeditionCrossingUntil = Time.time + durationSeconds;
+            _hasWaypoint = false;
+            _hasNextCorner = false;
+            _waitingAtTarget = false;
+            _nextPathTime = 0f;
+            _routeFailureSince = 0f;
+            _lastProgressTime = 0f;
+            _recoveryAttempts = 0;
+            _nextRecoveryAt = 0f;
+            State = DriveState.Moving;
+            return true;
+        }
+
         internal static void Stop(StopReason reason = StopReason.Explicit)
         {
-            RestoreMovementState();
+            // Once native zoning has begun, do not call CharacterController.SimpleMove or animation
+            // helpers on scene-bound PlayerControl objects. Erenshor owns that teardown completely.
+            // Clearing our references is sufficient; the LandMovement prefix no longer suppresses vanilla.
+            bool nativeZoning = false;
+            try { nativeZoning = GameData.Zoning; } catch { }
+            if (!nativeZoning) RestoreMovementState();
             _active = false;
             LastStopReason = reason;
             _target = null;
@@ -183,6 +280,15 @@ namespace ErenshorFollow
             _zoneOriginScene = null;
             _rebindStartedAt = 0f;
             _rebindReadySince = 0f;
+            _zoneHandoffStartedAt = 0f;
+            _recoveryAttempts = 0;
+            _nextRecoveryAt = 0f;
+            _lastPathAttemptAt = 0f;
+            _combatPaused = false;
+            _combatClearSince = 0f;
+            _expeditionCrossingHandoff = false;
+            _expeditionCrossingTarget = Vector3.zero;
+            _expeditionCrossingUntil = 0f;
             DirectIntent.Cancel();
             State = DriveState.Idle;
         }
@@ -197,7 +303,12 @@ namespace ErenshorFollow
             {
                 if (_directFollowIntent && DirectIntent.Phase != FollowIntentPhase.Rebinding)
                 {
-                    if (!BeginZoneRebind())
+                    if (!CrossZoneContinuationEnabled())
+                    {
+                        Notify("[Erenshor Follow] Direct cross-zone continuation is experimental and currently OFF. Following stopped for this native zone change.", "yellow");
+                        Stop(StopReason.ZoneContinuationDisabled);
+                    }
+                    else if (!BeginZoneRebind())
                     {
                         Notify("[Erenshor Follow] The target has no persistent Sim tracking identity, so Follow cannot safely continue across this zone change.", "yellow");
                         Stop(StopReason.TargetUnavailable);
@@ -206,10 +317,34 @@ namespace ErenshorFollow
                 return false;
             }
             if (_directFollowIntent && DirectIntent.Phase == FollowIntentPhase.Rebinding) return false;
+            if (_directFollowIntent && State == DriveState.AwaitingNativeZoneChange) return false;
 
-            if (!IsTargetValid() || player == null || player.Myself == null || !player.Myself.Alive)
+            bool crossingHandoff = _expeditionCrossingHandoff;
+            if (crossingHandoff)
             {
-                Stop(StopReason.TargetUnavailable);
+                if (Time.time >= _expeditionCrossingUntil || GameData.InCombat)
+                {
+                    Stop(GameData.InCombat ? StopReason.Explicit : StopReason.RouteUnavailable);
+                    return false;
+                }
+            }
+            else if (!IsTargetValid())
+            {
+                if (_directFollowIntent && TryBeginZoneHandoff()) return false;
+                StopInvalidTarget();
+                return false;
+            }
+            // Ordinary Follow does not own combat movement. Yield the PlayerControl patch completely
+            // while either the player/group or followed Sim is in real combat, then wait a short safety
+            // window before resuming. If the player is still holding movement when that window ends,
+            // the existing manual-takeover rule cancels Follow instead of fighting the input.
+            if (_directFollowIntent && UpdateDirectCombatPause()) return false;
+
+            if (player == null || player.Myself == null || !player.Myself.Alive)
+            {
+                if (_directFollowIntent)
+                    Notify("[Erenshor Follow] Following stopped because the player is unavailable or dead.", "yellow");
+                Stop(StopReason.PlayerUnavailable);
                 return false;
             }
             if (ManualMovementKeyHeld())
@@ -236,11 +371,11 @@ namespace ErenshorFollow
                 return true;
             }
             Vector3 from = player.transform.position;
-            Vector3 to = _target.transform.position;
+            Vector3 to = crossingHandoff ? _expeditionCrossingTarget : _target.transform.position;
             Vector3 flat = to - from;
             flat.y = 0f;
             float distance = flat.magnitude;
-            if (_waitingAtTarget && distance < ResumeDistance)
+            if (!crossingHandoff && _waitingAtTarget && distance < ResumeDistance)
             {
                 State = DriveState.Waiting;
                 SetMoving(player, false);
@@ -248,7 +383,8 @@ namespace ErenshorFollow
                 ResetProgress(from, distance);
                 return true;
             }
-            if (distance <= StopDistance)
+            float stopDistance = crossingHandoff ? 0.20f : StopDistance;
+            if (distance <= stopDistance)
             {
                 _waitingAtTarget = true;
                 State = DriveState.Waiting;
@@ -266,7 +402,8 @@ namespace ErenshorFollow
 
             if (Time.time >= _nextPathTime || !_hasWaypoint || HorizontalDistance(from, _waypoint) < 0.6f)
             {
-                _nextPathTime = Time.time + 0.25f;
+                _nextPathTime = Time.time + 0.35f;
+                _lastPathAttemptAt = Time.time;
                 NavMeshHit fromHit = new NavMeshHit();
                 NavMeshHit toHit = new NavMeshHit();
                 bool sampled = NavMesh.SamplePosition(from, out fromHit, 7f, NavMesh.AllAreas) &&
@@ -303,18 +440,32 @@ namespace ErenshorFollow
                     State = DriveState.PartialPathRetry;
                 }
             }
-            bool noProgress = Time.time - _lastProgressTime >= RouteRetrySeconds;
-            bool routeFailed = _routeFailureSince > 0f && Time.time - _routeFailureSince >= RouteRetrySeconds;
-            if (noProgress)
+            float noProgressSeconds = Time.time - _lastProgressTime;
+            bool noProgress = noProgressSeconds >= RouteRetrySeconds;
+            bool routeProblem = _routeFailureSince > 0f;
+            if (noProgress) State = DriveState.NoProgress;
+
+            FollowStuckRecoveryDecision recovery = FollowStuckRecoveryPolicy.Evaluate(
+                noProgressSeconds,
+                routeProblem,
+                _recoveryAttempts,
+                Time.time >= _nextRecoveryAt);
+            if (recovery == FollowStuckRecoveryDecision.Repath)
             {
-                State = DriveState.NoProgress;
+                _recoveryAttempts++;
+                _nextRecoveryAt = Time.time + FollowStuckRecoveryPolicy.RecoveryRetrySeconds;
                 _hasWaypoint = false;
                 _hasNextCorner = false;
                 _nextPathTime = 0f;
+                State = DriveState.RecoveryRepath;
+                SetMoving(player, false);
+                controller.SimpleMove(Vector3.zero);
+                return true;
             }
-            if ((noProgress && routeFailed) || Time.time - _lastProgressTime >= NoProgressFailureSeconds)
+            if (recovery == FollowStuckRecoveryDecision.Stop)
             {
-                Notify("[Erenshor Follow] Could not make progress on a walkable route to " + TargetName + ". Following stopped.", "yellow");
+                Notify("[Erenshor Follow] Could not make progress after " + _recoveryAttempts +
+                    " bounded repath attempts. Following " + TargetName + " stopped.", "yellow");
                 Stop(StopReason.RouteUnavailable);
                 return false;
             }
@@ -414,11 +565,118 @@ namespace ErenshorFollow
             catch { return false; }
         }
 
+        private static bool TryBeginZoneHandoff()
+        {
+            if (!_active || !_directFollowIntent || !CrossZoneContinuationEnabled()) return false;
+            SimPlayerTracking tracking = DirectIntent.Identity;
+            if (tracking == null || !SimTrackingRebind.TrackingIsInPlayerGroup(tracking)) return false;
+
+            // A dead/disabled avatar is ordinary target loss. The narrow handoff grace exists only when
+            // the persistent party identity still exists but Erenshor currently exposes no scene avatar,
+            // which is the ordering seen when a Sim zones just ahead of the player.
+            SimPlayer avatar = SimTrackingRebind.CurrentAvatar(tracking);
+            if (avatar != null) return false;
+
+            RestoreMovementState();
+            _target = null;
+            _drivenPlayer = null;
+            _drivenController = null;
+            _targetValidFrame = -1;
+            _zoneHandoffStartedAt = Time.time;
+            _combatPaused = false;
+            _combatClearSince = 0f;
+            ResetRouteStateForRebind();
+            State = DriveState.AwaitingNativeZoneChange;
+            Notify("[Erenshor Follow] " + TargetName + " entered a transition or left the local actor set. Keep moving normally through the native crossing if you intend to follow; Follow will stop if the player does not zone.", "yellow");
+            return true;
+        }
+
+        private static void TickZoneHandoff()
+        {
+            SimPlayerTracking tracking = DirectIntent.Identity;
+            SimPlayer avatar = SimTrackingRebind.CurrentAvatar(tracking);
+
+            FollowZoneHandoffPolicy.Inputs input = new FollowZoneHandoffPolicy.Inputs();
+            input.ContinuationEnabled = CrossZoneContinuationEnabled();
+            input.HasPersistentIdentity = tracking != null;
+            input.NativeZoning = GameData.Zoning;
+            input.TrackingInGroup = tracking != null && SimTrackingRebind.TrackingIsInPlayerGroup(tracking);
+            input.AvatarPresent = avatar != null;
+            input.SameIdentity = avatar != null && SimTrackingRebind.AvatarMatchesTracking(tracking, avatar);
+            input.AvatarUsable = avatar != null && IsUsableSim(avatar);
+            input.LivePartyMember = avatar != null && LeaderController.IsPlayerPartySim(avatar);
+            input.RemoteAuthority = avatar != null && CoopCompatibility.IsRemoteHuman(avatar);
+            input.TimedOut = _zoneHandoffStartedAt > 0f &&
+                Time.time - _zoneHandoffStartedAt >= FollowZoneHandoffPolicy.NativeZoneGraceSeconds;
+
+            FollowZoneHandoffFailure failure;
+            FollowZoneHandoffDecision decision = FollowZoneHandoffPolicy.Evaluate(input, out failure);
+            if (decision == FollowZoneHandoffDecision.Wait)
+            {
+                State = DriveState.AwaitingNativeZoneChange;
+                return;
+            }
+            if (decision == FollowZoneHandoffDecision.EnterRebind)
+            {
+                if (!BeginZoneRebind()) StopZoneHandoff(FollowZoneHandoffFailure.MissingIdentity);
+                return;
+            }
+            if (decision == FollowZoneHandoffDecision.ResumeLocal)
+            {
+                _target = avatar;
+                _zoneHandoffStartedAt = 0f;
+                _targetValidFrame = -1;
+                ResetRouteStateAfterRebind();
+                State = DriveState.Idle;
+                Notify("[Erenshor Follow] Reacquired " + TargetName + " in the current zone. Following resumed.", "lightblue");
+                return;
+            }
+            StopZoneHandoff(failure);
+        }
+
+        private static void StopZoneHandoff(FollowZoneHandoffFailure failure)
+        {
+            StopReason reason = StopReason.TargetUnavailable;
+            string detail;
+            switch (failure)
+            {
+                case FollowZoneHandoffFailure.ContinuationDisabled:
+                    reason = StopReason.ZoneContinuationDisabled;
+                    detail = "cross-zone continuation was disabled before native zoning began";
+                    break;
+                case FollowZoneHandoffFailure.LeftParty:
+                    reason = StopReason.TargetLeftParty;
+                    detail = "left the real party before native player zoning began";
+                    break;
+                case FollowZoneHandoffFailure.IdentityMismatch:
+                    reason = StopReason.TargetIdentityMismatch;
+                    detail = "was replaced by a different SimPlayerTracking identity";
+                    break;
+                case FollowZoneHandoffFailure.RemoteAuthority:
+                    reason = StopReason.TargetRemote;
+                    detail = "became remote-authority";
+                    break;
+                case FollowZoneHandoffFailure.Timeout:
+                    reason = StopReason.ZoneHandoffTimeout;
+                    detail = "left the local actor set but the player never entered a native zone transition";
+                    break;
+                case FollowZoneHandoffFailure.MissingIdentity:
+                    detail = "no longer has a persistent Sim tracking identity";
+                    break;
+                default:
+                    detail = "is unavailable or dead";
+                    break;
+            }
+            string name = string.IsNullOrWhiteSpace(TargetName) ? "The follow target" : TargetName;
+            Notify("[Erenshor Follow] Following stopped: " + name + " " + detail + ".", "yellow");
+            Stop(reason);
+        }
+
         private static bool BeginZoneRebind()
         {
             if (!_active || !_directFollowIntent) return false;
             if (DirectIntent.Phase == FollowIntentPhase.Rebinding) return true;
-            if (!FollowRebindPolicy.CanSuspendForZone(true, GameData.Zoning, DirectIntent.Identity != null)) return false;
+            if (!FollowRebindPolicy.CanSuspendForZone(true, GameData.Zoning, DirectIntent.Identity != null, CrossZoneContinuationEnabled())) return false;
             if (!DirectIntent.BeginRebinding()) return false;
 
             // Do not call SimpleMove or any other PlayerControl movement method after GameData.Zoning
@@ -430,6 +688,9 @@ namespace ErenshorFollow
             _zoneOriginScene = string.IsNullOrWhiteSpace(_followScene) ? ActiveScene() : _followScene;
             _rebindStartedAt = Time.time;
             _rebindReadySince = 0f;
+            _zoneHandoffStartedAt = 0f;
+            _combatPaused = false;
+            _combatClearSince = 0f;
             ResetRouteStateForRebind();
             State = DriveState.RebindingAfterZoneChange;
             return true;
@@ -437,6 +698,13 @@ namespace ErenshorFollow
 
         private static void TickRebind()
         {
+            if (!CrossZoneContinuationEnabled())
+            {
+                Notify("[Erenshor Follow] Following stopped because experimental cross-zone continuation was disabled during the native transition.", "yellow");
+                Stop(StopReason.ZoneContinuationDisabled);
+                return;
+            }
+
             SimPlayerTracking tracking = DirectIntent.Identity;
             if (tracking == null)
             {
@@ -495,6 +763,9 @@ namespace ErenshorFollow
             _zoneOriginScene = null;
             _rebindStartedAt = 0f;
             _rebindReadySince = 0f;
+            _zoneHandoffStartedAt = 0f;
+            _combatPaused = false;
+            _combatClearSince = 0f;
             _targetValidFrame = -1;
             ResetRouteStateAfterRebind();
             if (!DirectIntent.ResumeAfterRebind())
@@ -545,6 +816,131 @@ namespace ErenshorFollow
             Stop(reason);
         }
 
+        internal static bool IsFollowingTarget(SimPlayer sim)
+        {
+            if (!_active || !_directFollowIntent || sim == null) return false;
+            if (_target != null && object.ReferenceEquals(_target, sim)) return true;
+            SimPlayerTracking expected = DirectIntent.Identity;
+            if (expected == null) return false;
+            return FollowRebindPolicy.SameIdentity(expected, SimTrackingRebind.Capture(sim));
+        }
+
+        internal static bool CrossZoneContinuationEnabled()
+        {
+            try
+            {
+                return ErenshorFollowPlugin.Instance != null &&
+                       ErenshorFollowPlugin.Instance.Settings != null &&
+                       ErenshorFollowPlugin.Instance.Settings.ExperimentalCrossZoneFollow;
+            }
+            catch { return false; }
+        }
+
+        private static bool UpdateDirectCombatPause()
+        {
+            if (!_directFollowIntent) return false;
+
+            bool combat = IsDirectCombatActive();
+            float clearSeconds = 0f;
+            if (_combatPaused && !combat)
+            {
+                if (_combatClearSince <= 0f) _combatClearSince = Time.time;
+                clearSeconds = Math.Max(0f, Time.time - _combatClearSince);
+            }
+
+            FollowCombatDecision decision = FollowCombatPolicy.Evaluate(
+                true, combat, _combatPaused, clearSeconds);
+
+            if (decision == FollowCombatDecision.PauseForCombat)
+            {
+                if (!_combatPaused)
+                {
+                    _combatPaused = true;
+                    _combatClearSince = 0f;
+                    ResetRouteStateForRebind();
+                }
+                else
+                {
+                    _combatClearSince = 0f;
+                }
+                State = DriveState.PausedForCombat;
+                return true;
+            }
+
+            if (decision == FollowCombatDecision.RecoveringAfterCombat)
+            {
+                State = DriveState.RecoveringAfterCombat;
+                return true;
+            }
+
+            if (_combatPaused)
+            {
+                _combatPaused = false;
+                _combatClearSince = 0f;
+                ResetRouteStateAfterRebind();
+                State = DriveState.Idle;
+            }
+            return false;
+        }
+
+        private static bool IsLocalPlayerAvailable()
+        {
+            try
+            {
+                PlayerControl player = GameData.PlayerControl;
+                return player != null && player.Myself != null && player.Myself.Alive;
+            }
+            catch { return false; }
+        }
+
+        private static bool IsDirectCombatActive()
+        {
+            try { if (GameData.InCombat) return true; } catch { }
+            SimPlayer sim = _target;
+            if (sim == null) return false;
+            try { if (sim.IsSimGroupInCombat()) return true; } catch { }
+            try
+            {
+                NPC npc = sim.MyStats == null || sim.MyStats.Myself == null ? null : sim.MyStats.Myself.MyNPC;
+                if (npc != null && npc.CurrentAggroTarget != null) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        internal static string DiagnosticsStatus()
+        {
+            string scene = ActiveScene() ?? "?";
+            SimPlayerTracking tracking = DirectIntent.Identity;
+            SimPlayer avatar = _target;
+            bool avatarPresent = avatar != null;
+            bool trackingInGroup = tracking != null && SimTrackingRebind.TrackingIsInPlayerGroup(tracking);
+            bool sameTracking = tracking != null && avatar != null && SimTrackingRebind.AvatarMatchesTracking(tracking, avatar);
+            bool party = avatar != null && LeaderController.IsPlayerPartySim(avatar);
+            bool remote = avatar != null && CoopCompatibility.IsRemoteHuman(avatar);
+            bool zoning = false;
+            try { zoning = GameData.Zoning; } catch { }
+            string pathAge = _lastPathAttemptAt <= 0f ? "never" : Math.Max(0f, Time.time - _lastPathAttemptAt).ToString("F1") + "s";
+            string phase = !_active ? "idle" :
+                (State == DriveState.AwaitingNativeZoneChange ? "awaiting-native-zone" :
+                (_directFollowIntent ? DirectIntent.Phase.ToString() : "owner=lead/expedition"));
+
+            return "[Erenshor Follow] state=" + State +
+                   " target=" + (string.IsNullOrWhiteSpace(TargetName) ? "-" : TargetName) +
+                   " tracking=" + (tracking == null ? "no" : "yes") +
+                   " avatar=" + (avatarPresent ? "yes" : "no") +
+                   " identity=" + (tracking == null || avatar == null ? "pending" : (sameTracking ? "match" : "MISMATCH")) +
+                   " party=" + (tracking == null && avatar == null ? "n/a" : ((trackingInGroup || party) ? "yes" : "no")) +
+                   " authority=" + (avatar == null ? "n/a" : (remote ? "remote" : "local")) +
+                   " scene=" + scene +
+                   " zoning=" + (zoning ? "yes" : "no") +
+                   " phase=" + phase +
+                   " lastRepath=" + pathAge +
+                   " recovery=" + _recoveryAttempts + "/" + FollowStuckRecoveryPolicy.MaxRepathAttempts +
+                   " crossZone=" + (CrossZoneContinuationEnabled() ? "ON" : "OFF") +
+                   " stop=" + LastStopReason;
+        }
+
         private static void ResetRouteStateForRebind()
         {
             _nextPathTime = 0f;
@@ -557,6 +953,8 @@ namespace ErenshorFollow
             _routeFailureSince = 0f;
             _lastPartialEndpoint = Vector3.zero;
             _hasPartialEndpoint = false;
+            _recoveryAttempts = 0;
+            _nextRecoveryAt = 0f;
         }
 
         private static void ResetRouteStateAfterRebind()
@@ -565,16 +963,49 @@ namespace ErenshorFollow
         }
 
         // Cached per-frame: this is called once from Tick() and again from TryDrive() in the same
-        // frame's update, and CoopCompatibility.IsRemoteHuman is not free to recompute twice.
+        // frame. Follow owns only verified local-party Sims; an unloaded/dead, remote-authority, or
+        // no-longer-party target fails closed instead of continuing against a stale actor reference.
         private static bool IsTargetValid()
         {
             int frame = Time.frameCount;
             if (_targetValidFrame != frame)
             {
                 _targetValidFrame = frame;
-                _targetValidCache = IsUsableSim(_target) && !CoopCompatibility.IsRemoteHuman(_target);
+                bool usable = IsUsableSim(_target);
+                bool remote = usable && CoopCompatibility.IsRemoteHuman(_target);
+                bool party = usable && !remote && LeaderController.IsPlayerPartySim(_target);
+                _targetEligibilityCache = FollowActorEligibilityPolicy.Evaluate(usable, remote, party);
+                _targetValidCache = _targetEligibilityCache == FollowActorEligibility.Eligible;
             }
             return _targetValidCache;
+        }
+
+        private static void StopInvalidTarget()
+        {
+            StopReason reason = StopReason.TargetUnavailable;
+            string detail = "is unavailable or dead";
+            if (_directFollowIntent && DirectIntent.Identity != null &&
+                !SimTrackingRebind.TrackingIsInPlayerGroup(DirectIntent.Identity))
+            {
+                reason = StopReason.TargetLeftParty;
+                detail = "is no longer in your current party";
+            }
+            else if (_targetEligibilityCache == FollowActorEligibility.RemoteAuthority)
+            {
+                reason = StopReason.TargetRemote;
+                detail = "is controlled by a remote COOP client";
+            }
+            else if (_targetEligibilityCache == FollowActorEligibility.LeftParty)
+            {
+                reason = StopReason.TargetLeftParty;
+                detail = "is no longer in your current party";
+            }
+            if (_directFollowIntent)
+            {
+                string name = string.IsNullOrWhiteSpace(TargetName) ? "The follow target" : TargetName;
+                Notify("[Erenshor Follow] Following stopped: " + name + " " + detail + ".", "yellow");
+            }
+            Stop(reason);
         }
 
         private static float HorizontalDistance(Vector3 a, Vector3 b)
@@ -590,6 +1021,8 @@ namespace ErenshorFollow
             _lastTargetDistance = targetDistance;
             _lastProgressTime = Time.time;
             _routeFailureSince = 0f;
+            _recoveryAttempts = 0;
+            _nextRecoveryAt = 0f;
         }
 
         private static string ActiveScene()
