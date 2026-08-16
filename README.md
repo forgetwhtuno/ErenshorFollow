@@ -1,5 +1,7 @@
 # Erenshor Follow 0.6.4
 
+Part of the **Forgotten Roads for Erenshor** mod collection.
+
 Erenshor Follow adds player movement assistance, Sim-led travel, and expedition coordination around existing Erenshor zone transitions. It is separate from Deep Sims; when the known embedded Deep Sims follow movement prefix is detected, standalone Follow disables that prefix by Harmony owner ID so only one movement owner remains. Other Deep Sims integration stays reflection-based and optional, not a loader-level dependency.
 
 ## Status: playable expedition workflow with experimental direct cross-zone Follow
@@ -118,7 +120,7 @@ This is an unofficial, community-made mod for Erenshor and is not affiliated wit
 
 ## Optional Suite Hub integration
 
-Erenshor Suite Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `FollowControlApi` surface. The mod remains independently usable without Suite Hub and does not compile against Hub types or assume Hub load order.
+Forgotten Roads Hub is **optional**. When it is installed, this mod can expose its normal player-facing controls there through the versioned public `FollowControlApi` surface. The mod remains independently usable without the Hub and does not compile against Hub types or assume Hub load order.
 
 Follow keeps its contextual Sim action menu and travel overlay rather than adding a general module panel or launcher. `/efollow`, `/elead`, and `/expedition` remain available standalone.
 
