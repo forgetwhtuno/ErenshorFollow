@@ -43,12 +43,43 @@ namespace ErenshorFollow
                 !SuiteHubPresencePolicy.Parse("protocol=1&module=suitehub&module=suitehub&status=Ready&uiAvailable=true").Usable &&
                 !SuiteHubPresencePolicy.Parse("protocol=2&module=suitehub&status=Ready&uiAvailable=true&quickCloseContract=1&quickClose=1").Usable);
 
-            failed += Check("standalone Escape fallback ownership",
-                FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, false, false) &&
-                FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, false) &&
-                FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, false, true) &&
-                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, true) &&
-                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(false, true, true));
+            // A Hub that is loaded but not yet Ready is still PRESENT. Presence is what suppresses a
+            // competing local Escape poll, so it must not require a usable/ready payload.
+            SuiteHubPresenceState presentNotReady = SuiteHubPresencePolicy.Parse(
+                "protocol=1&module=suitehub&status=Starting&uiAvailable=false");
+            failed += Check("Hub present but not ready is still present",
+                presentNotReady.Present && !presentNotReady.Usable && !presentNotReady.QuickCloseVerified);
+            // Issue 1 case 3: a live endpoint whose payload is malformed this frame must NOT be
+            // reinterpreted as standalone, or Follow would start polling Escape against a live Hub.
+            SuiteHubPresenceState brokenLiveEndpoint = SuiteHubPresencePolicy.FromEndpoint(true, "broken");
+            failed += Check("live Hub endpoint with unusable payload stays present, not standalone",
+                brokenLiveEndpoint.Present && !brokenLiveEndpoint.Usable && !brokenLiveEndpoint.QuickCloseVerified);
+            failed += Check("absent Hub endpoint is genuinely standalone",
+                !SuiteHubPresencePolicy.FromEndpoint(false, string.Empty).Present);
+
+            // Three-state Escape authority (suite contract shared with Party Tools).
+            failed += Check("no Hub grants the local Escape fallback",
+                FollowQuickClosePolicy.Resolve(false, false, false) == SuiteEscapeAuthority.StandaloneFallback &&
+                FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, false, false, false));
+            failed += Check("Hub present with quickClose=0 must not poll Escape locally",
+                FollowQuickClosePolicy.Resolve(true, false, true) == SuiteEscapeAuthority.ExplicitCloseControls &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, false, true) &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, false, false));
+            failed += Check("Hub verified but provider unregistered must not poll Escape locally",
+                FollowQuickClosePolicy.Resolve(true, true, false) == SuiteEscapeAuthority.ExplicitCloseControls &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, true, false));
+            failed += Check("verified Hub plus registered provider yields Hub authority",
+                FollowQuickClosePolicy.Resolve(true, true, true) == SuiteEscapeAuthority.HubVerified &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, true, true, true));
+            failed += Check("closed Follow UI never handles Escape in any authority state",
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(false, false, false, false) &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(false, true, false, false) &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(false, true, true, true));
+            failed += Check("a live but unusable Hub endpoint still suppresses the local Escape poll",
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, brokenLiveEndpoint.Present,
+                    brokenLiveEndpoint.QuickCloseVerified, true) &&
+                !FollowQuickClosePolicy.ShouldHandleEscapeLocally(true, presentNotReady.Present,
+                    presentNotReady.QuickCloseVerified, true));
 
             string uiState = SuiteUiStatePolicy.Build("follow", true, 530, 12.3456);
             failed += Check("ui.state exact closeable wire",

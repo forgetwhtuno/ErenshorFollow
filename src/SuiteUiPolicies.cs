@@ -5,11 +5,17 @@ namespace ErenshorFollow
 {
     internal struct SuiteHubPresenceState
     {
+        // Present  : a Forgotten Roads Hub exists at all (descriptor parsed, or the live IPC
+        //            endpoint is registered even though this second's payload was unusable).
+        // Usable   : Hub is Ready and advertises an available retained UI.
+        // QuickCloseVerified : Hub additionally advertises a verified central quick-close binding.
+        internal readonly bool Present;
         internal readonly bool Usable;
         internal readonly bool QuickCloseVerified;
 
-        internal SuiteHubPresenceState(bool usable, bool quickCloseVerified)
+        internal SuiteHubPresenceState(bool present, bool usable, bool quickCloseVerified)
         {
+            Present = present;
             Usable = usable;
             QuickCloseVerified = quickCloseVerified;
         }
@@ -20,10 +26,20 @@ namespace ErenshorFollow
     // quickCloseContract=1 and quickClose=1 must be present on a usable retained Hub.
     internal static class SuiteHubPresencePolicy
     {
+        // Runtime endpoint presence is stronger evidence that Hub exists than a transient malformed
+        // or throwing payload. Never reinterpret a live Hub function as "standalone" and start a
+        // competing Escape poll merely because its describe call failed this second.
+        internal static SuiteHubPresenceState FromEndpoint(bool endpointPresent, string payload)
+        {
+            if (!endpointPresent) return Bad();
+            SuiteHubPresenceState parsed = Parse(payload);
+            return parsed.Present ? parsed : new SuiteHubPresenceState(true, false, false);
+        }
+
         internal static SuiteHubPresenceState Parse(string payload)
         {
             if (string.IsNullOrEmpty(payload) || payload.Length > 2048)
-                return new SuiteHubPresenceState(false, false);
+                return Bad();
 
             string protocol = null, module = null, status = null, uiAvailable = null;
             string quickCloseContract = null, quickClose = null;
@@ -31,7 +47,7 @@ namespace ErenshorFollow
             for (int i = 0; i < fields.Length; i++)
             {
                 int equals = fields[i].IndexOf('=');
-                if (equals <= 0) return new SuiteHubPresenceState(false, false);
+                if (equals <= 0) return Bad();
                 string key = fields[i].Substring(0, equals);
                 string value = fields[i].Substring(equals + 1);
                 if (key == "protocol") { if (protocol != null) return Bad(); protocol = value; }
@@ -42,19 +58,21 @@ namespace ErenshorFollow
                 else if (key == "quickClose") { if (quickClose != null) return Bad(); quickClose = value; }
             }
 
-            bool usable = string.Equals(protocol, "1", StringComparison.Ordinal)
+            bool present = string.Equals(protocol, "1", StringComparison.Ordinal)
                 && string.Equals(module, "suitehub", StringComparison.Ordinal)
-                && string.Equals(status, "Ready", StringComparison.Ordinal)
+                && status != null;
+            bool ready = present && string.Equals(status, "Ready", StringComparison.Ordinal);
+            bool usable = ready
                 && string.Equals(uiAvailable, "true", StringComparison.OrdinalIgnoreCase);
-            bool verified = usable
+            bool verified = ready
                 && string.Equals(quickCloseContract, "1", StringComparison.Ordinal)
                 && string.Equals(quickClose, "1", StringComparison.Ordinal);
-            return new SuiteHubPresenceState(usable, verified);
+            return new SuiteHubPresenceState(present, usable, verified);
         }
 
         private static SuiteHubPresenceState Bad()
         {
-            return new SuiteHubPresenceState(false, false);
+            return new SuiteHubPresenceState(false, false, false);
         }
     }
 
@@ -74,11 +92,32 @@ namespace ErenshorFollow
     }
 
 
+    internal enum SuiteEscapeAuthority
+    {
+        // No Hub in the load order: this module may own a local Escape fallback for its own UI.
+        StandaloneFallback,
+        // Hub exists but central quick-close is not verified, or this module never registered its
+        // provider. The module must NOT poll Escape, otherwise several Forgotten Roads modules
+        // compete for the same key. The player uses each window's explicit X/close control.
+        ExplicitCloseControls,
+        // Hub verified central quick-close AND this module registered its provider: Hub owns it.
+        HubVerified
+    }
+
     internal static class FollowQuickClosePolicy
     {
-        internal static bool ShouldHandleEscapeLocally(bool ownedUiOpen, bool verifiedHubQuickClose, bool providerRegistered)
+        internal static SuiteEscapeAuthority Resolve(bool hubPresent, bool verifiedHubQuickClose, bool providerRegistered)
         {
-            return ownedUiOpen && !(verifiedHubQuickClose && providerRegistered);
+            if (!hubPresent) return SuiteEscapeAuthority.StandaloneFallback;
+            if (verifiedHubQuickClose && providerRegistered) return SuiteEscapeAuthority.HubVerified;
+            return SuiteEscapeAuthority.ExplicitCloseControls;
+        }
+
+        internal static bool ShouldHandleEscapeLocally(bool ownedUiOpen, bool hubPresent,
+            bool verifiedHubQuickClose, bool providerRegistered)
+        {
+            return ownedUiOpen
+                && Resolve(hubPresent, verifiedHubQuickClose, providerRegistered) == SuiteEscapeAuthority.StandaloneFallback;
         }
     }
 

@@ -6,7 +6,7 @@ Erenshor Follow adds player movement assistance, Sim-led travel, and expedition 
 
 ## Status: playable expedition workflow with experimental direct cross-zone Follow
 
-The current local patch keeps Erenshor authoritative for movement, combat, NavMesh, party state, zonelines, actor spawning, and scene transitions while hardening Follow's coordination around those systems. Sim Actions and the travel-status overlay are retained uGUI (no production `OnGUI`/`GUILayout` path), normal access has no global F8-style hotkey, direct Follow accepts only living authoritative local-party Sims, and switching targets releases the previous movement ownership before rebinding. The optional Suite contract exposes `ui.state`/`closePanel`; local Escape remains the contextual fallback unless a usable Hub explicitly advertises verified `quickClose=1` and this module's provider registered successfully.
+The current local patch keeps Erenshor authoritative for movement, combat, NavMesh, party state, zonelines, actor spawning, and scene transitions while hardening Follow's coordination around those systems. Sim Actions and the travel-status overlay are retained uGUI (no production `OnGUI`/`GUILayout` path), normal access has no global F8-style hotkey, direct Follow accepts only living authoritative local-party Sims, and switching targets releases the previous movement ownership before rebinding. The optional Suite contract exposes `ui.state`/`closePanel`; Escape ownership follows the shared suite contract described under [Suite quick-close ownership](#suite-quick-close-ownership), so Follow only polls Escape itself when no Forgotten Roads Hub is loaded at all.
 
 Direct Follow now has an **OFF-by-default** `Follow/ExperimentalCrossZoneFollow` setting. When enabled, it may preserve the exact `SimPlayerTracking` identity through a native player zone transition, wait for Erenshor to rebuild the party, and reacquire only that tracking object's new `MyAvatar`. It never initiates zoning, scene loading, Sim spawning, or teleportation. Expeditions use the same persistent identity rule for every native multi-zone transition and never report arrival if the tracked leader failed to reacquire.
 If the followed Sim disappears a moment before the player starts native zoning, Follow uses only a bounded 2.5-second handoff grace: vanilla player control is restored while the mod waits for `GameData.Zoning` or the exact local avatar to return. If neither happens, Follow stops instead of guessing a crossing or destination.
@@ -51,7 +51,7 @@ At leg start, Follow releases only the selected Sim's previous guard/follow post
 
 During a native scene transition the status panel remains visible as presentation-only UI and reports **Changing zones... Reacquiring <leader>...** while the coordinator waits for Erenshor to rebuild the exact tracked Sim. After every successful reacquisition the final-destination route is recalculated rather than blindly consuming a stale itinerary. At arrival the panel becomes **EXPEDITION COMPLETE** and shows **Return** only when the verified route/leader record supports it, and **Camp Here** only when the optional Campmaster capability is actually available.
 
-Closing the setup cancels planning only. Closing or Escape-hiding the expedition status **never cancels the expedition**; runtime travel continues and status can be reopened from Sim Actions. There is no global Follow UI hotkey. A small shared retained fallback entry point is automatically visible when Forgotten Roads Hub is absent/unavailable and hides while a healthy Hub owns primary access. The three Follow-owned retained surfaces advertise one aggregate `ui.state`/`closePanel` contract, with the topmost surface chosen by sort order + activation. Local Escape is only the fallback when verified Suite quick-close is unavailable. The travel overlay position remains persisted as normalized bottom-left `UI/OverlayPositionX/Y`; old pixel offset values remain load-compatible but are not reinterpreted as normalized coordinates. Verbose click/route diagnostics are controlled by `Diagnostics/Verbose`.
+Closing the setup cancels planning only. Closing or Escape-hiding the expedition status **never cancels the expedition**; runtime travel continues and status can be reopened from Sim Actions. There is no global Follow UI hotkey. A small shared retained fallback entry point is automatically visible when Forgotten Roads Hub is absent/unavailable and hides while a healthy Hub owns primary access. The three Follow-owned retained surfaces advertise one aggregate `ui.state`/`closePanel` contract, with the topmost surface chosen by sort order + activation. Local Escape is only used when no Hub is loaded at all — see [Suite quick-close ownership](#suite-quick-close-ownership). The travel overlay position remains persisted as normalized bottom-left `UI/OverlayPositionX/Y`; old pixel offset values remain load-compatible but are not reinterpreted as normalized coordinates. Verbose click/route diagnostics are controlled by `Diagnostics/Verbose`.
 
 
 ### Native party-command menu vs Follow Sim Actions
@@ -125,5 +125,25 @@ Forgotten Roads Hub is **optional**. When it is installed, this mod can expose i
 Follow keeps its contextual Sim action menu and travel overlay rather than inventing a second gameplay panel. The shared Hub-aware fallback entry point provides mouse discoverability when Hub is absent/unavailable; `/efollow`, `/elead`, and `/expedition` remain compatibility controls.
 
 Hub can show current Follow/Lead/Expedition state and expose Stop plus the existing expedition pause/resume/cancel/return actions. Its Developer settings tier may also toggle the existing `Diagnostics/Verbose` setting; overlay coordinates remain owned by Follow's contextual UI rather than becoming Hub controls. The optional Aura surface also provides `ui.state` and `closePanel` for the contextual Sim Actions menu so the shared quick-close owner can close it without a second Escape hook. Erenshor remains authoritative for movement, NavMesh, zonelines, scene changes, combat, and identity.
+
+### Suite quick-close ownership
+
+Escape ownership has three states, shared across Forgotten Roads modules so that two mods never
+compete for the same key press:
+
+| Hub state | Who owns Escape | Player closes Follow windows with |
+| --- | --- | --- |
+| No Hub loaded (IPC endpoint absent) | Follow's own local fallback | Escape, or the window's X control |
+| Hub loaded, central quick-close not verified (`quickClose=0`, payload unusable, or Follow's provider did not register) | Nobody polls Escape | The window's explicit X control |
+| Hub loaded, verified `quickCloseContract=1` + `quickClose=1`, and Follow's provider registered | Hub | Hub's central quick-close, or the window's X control |
+
+The middle state is deliberate. Once a Hub is loaded, Follow stops polling Escape even if Hub has
+not yet advertised a usable quick-close binding — a live Hub IPC endpoint is treated as proof that
+Hub exists even when a given describe payload is malformed or unavailable that frame. Follow will
+not reinterpret a transient bad payload as "standalone" and start a competing Escape poll.
+
+In every state, closing a Follow window is presentation only. Escape and the X control never cancel
+Follow, Lead, or an Expedition; runtime travel continues and the status panel can be reopened from
+Sim Actions. Cancelling requires the explicit Cancel action.
 
 The retained UI and shared quick-close integration still require an installed-reference compile and live Lunaris hot-reload/zone-transition pass before release.
