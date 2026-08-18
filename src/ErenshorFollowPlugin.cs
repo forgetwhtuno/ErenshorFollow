@@ -3,11 +3,11 @@ using Lunaris;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using ForgottenRoads.StandaloneUi;
 
 namespace ErenshorFollow
 {
-    // Deep Sims compatibility is reflection/owner-ID based (see DisableEmbeddedDeepSimsFollow
-    // and CoopCompatibility/ExpeditionIntegrationBridge) rather than a declared loader
+    // Deep Sims/COOP compatibility is reflection-based through optional bridges rather than a declared loader
     // dependency, so it continues to work whether or not Deep Sims is present or has loaded yet.
     [LunarisPlugin(PluginGuid, PluginVersion, "forgetwhtuno",
         "Player movement assistance, Sim-led travel, and expedition coordination around existing Erenshor zone transitions.")]
@@ -21,6 +21,8 @@ namespace ErenshorFollow
         internal static bool VerboseDiagnostics { get; private set; }
 
         private Harmony _harmony;
+        private bool _runtimeHooksReady;
+        private string _runtimeHookFailure = string.Empty;
         internal FollowSettings Settings;
         private int _pendingControlAction;
         private FollowSuiteAuraProvider _auraProvider;
@@ -40,16 +42,27 @@ namespace ErenshorFollow
             ExpeditionIntegrationBridge.Initialize();
             SuiteUiPolicy.InitializeHubPresence(this);
             _harmony = new Harmony(PluginGuid);
-            _harmony.PatchAll();
-            if (!ExpeditionDoGuardPatch.ShapeVerified)
+            try
+            {
+                _harmony.PatchAll();
+                _runtimeHooksReady = true;
+                _runtimeHookFailure = string.Empty;
+            }
+            catch (Exception ex)
+            {
+                _runtimeHooksReady = false;
+                _runtimeHookFailure = ex.GetType().Name;
+                try { _harmony.UnpatchSelf(); } catch { }
+                Logging.LogError("Erenshor Follow runtime hooks unavailable (" + _runtimeHookFailure + "). Movement/expedition control is disabled, but the standalone status UI will remain available.");
+            }
+            if (_runtimeHooksReady && !ExpeditionDoGuardPatch.ShapeVerified)
                 Logging.LogWarning("Expedition movement ownership patch unavailable: SimPlayer.DoGuard() shape was not verified; native guard AI remains untouched.");
-            if (!FollowCameraUsingUiPatch.ShapeVerified)
+            if (_runtimeHooksReady && !FollowCameraUsingUiPatch.ShapeVerified)
                 Logging.LogWarning("Follow retained-UI camera containment unavailable: " +
                     (string.IsNullOrWhiteSpace(FollowCameraCompatibility.LastFailure) ?
                         "verified CameraController.UsingUI boundary was not proven" : FollowCameraCompatibility.LastFailure) +
                     "; no alternate camera patch was installed.");
-            DisableEmbeddedDeepSimsFollow();
-            SceneManager.sceneLoaded += OnSceneLoaded;
+            if (_runtimeHooksReady) SceneManager.sceneLoaded += OnSceneLoaded;
             try
             {
                 _auraProvider = new FollowSuiteAuraProvider(this);
@@ -63,6 +76,14 @@ namespace ErenshorFollow
             Logging.LogInfo("Erenshor Follow " + PluginVersion + " loaded. Sim Actions retained UI revision=" +
                 SimActionMenuLayoutPolicy.UiRevision + ". Use /efollow <SimName>, /efollow status, /efollow ui, or /efollow off. /dsfollow is also accepted for compatibility.");
             Logging.LogInfo("Sim-Led Expeditions available: /expedition status|diag|pause|resume|cancel|return.");
+            StandaloneFallbackUi.Initialize(this, "follow", "FOLLOW",
+                "Select a local party Sim to open Sim Actions and create a Follow or Expedition session.", 240f,
+                FollowControlApi.GetStatus,
+                new FallbackAction("Stop Travel", FollowControlApi.TryStop, null),
+                new FallbackAction("Pause Expedition", FollowControlApi.TryPauseExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Resume Expedition", FollowControlApi.TryResumeExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Cancel Expedition", FollowControlApi.TryCancelExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
+                new FallbackAction("Return", FollowControlApi.TryReturn, delegate { return FollowControlApi.GetBasicState().CanReturn; }));
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -79,6 +100,13 @@ namespace ErenshorFollow
 
         private void Update()
         {
+            if (!_runtimeHooksReady)
+            {
+                try { StandaloneFallbackUi.Tick(SuiteUiPolicy.IsGameplayReady()); }
+                catch (Exception ex) { Logging.LogError("Follow degraded-mode UI update failed: " + ex.GetType().Name); }
+                _pendingControlAction = 0;
+                return;
+            }
             try
             {
                 int control = _pendingControlAction; _pendingControlAction = 0;
@@ -125,12 +153,14 @@ namespace ErenshorFollow
                 // "Changing zones / Reacquiring". It remains presentation-only.
                 TravelStatusOverlay.Tick();
                 FollowUiSurfaceRouter.TickLocalEscapeFallback();
+                StandaloneFallbackUi.Tick(SuiteUiPolicy.IsGameplayReady());
             }
             catch (Exception ex) { Logging.LogError("Follow retained UI update failed: " + ex); }
         }
 
         private void OnDestroy()
         {
+            StandaloneFallbackUi.Dispose();
             try { if (_auraProvider != null) _auraProvider.Unregister(); } catch { }
             _auraProvider = null;
             try { SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }
@@ -152,24 +182,14 @@ namespace ErenshorFollow
             if (Instance == this) Instance = null;
         }
 
-        private void DisableEmbeddedDeepSimsFollow()
-        {
-            try
-            {
-                System.Reflection.MethodInfo movement = AccessTools.Method(typeof(PlayerControl), "LandMovement");
-                if (movement != null)
-                {
-                    _harmony.Unpatch(movement, HarmonyPatchType.Prefix, "forgetwhtuno.erenshor.deepsims");
-                    Logging.LogInfo("Standalone Follow owns player-follow movement; disabled the embedded Deep Sims movement prefix.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logging.LogWarning("Could not disable the embedded Deep Sims follow prefix: " + ex.Message);
-            }
-        }
+        internal bool RuntimeHooksReady { get { return _runtimeHooksReady; } }
+        internal string RuntimeHookFailure { get { return _runtimeHookFailure; } }
 
-        internal bool RequestControlAction(int action) { if (action < 1 || action > 5) return false; _pendingControlAction = action; return true; }
+        internal bool RequestControlAction(int action)
+        {
+            if (!_runtimeHooksReady || action < 1 || action > 5) return false;
+            _pendingControlAction = action; return true;
+        }
 
         internal bool TrySetControlSetting(string settingId, string value, out string failure)
         {

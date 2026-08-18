@@ -2,6 +2,7 @@
 
 ## 0.6.4 - RC telemetry defaults
 
+- Aligned Suite Escape ownership with the current three-state suite contract (`StandaloneFallback` / `ExplicitCloseControls` / `HubVerified`). Follow previously polled Escape whenever verified Hub quick-close was absent, including while a Hub was loaded with `quickClose=0`; it now stops polling as soon as a Hub is present, so Forgotten Roads modules cannot compete for the same key. A live Hub IPC endpoint counts as presence even when a describe payload is malformed that frame. No compile-time dependency on Hub or Party Tools was added, and window close remains presentation-only for Follow/Lead/Expedition runtime.
 - Keeps movement writer/NavMesh/animation heartbeats and detailed route phases behind the existing explicit Verbose diagnostics setting.
 - Retains bounded default lifecycle evidence for expedition failure, cancellation, arrival, and exact leader reacquisition.
 - Adds deterministic telemetry policy tests; Expedition movement, ownership, crossing, and reacquisition behavior is otherwise unchanged.

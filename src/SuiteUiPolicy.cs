@@ -22,7 +22,7 @@ namespace ErenshorFollow
         internal static void InitializeHubPresence(LunarisPlugin owner)
         {
             _hubPresence = null;
-            _hubState = new SuiteHubPresenceState(false, false);
+            _hubState = new SuiteHubPresenceState(false, false, false);
             _nextHubProbe = 0f;
             if (owner == null) return;
             try { _hubPresence = owner.IPCAuraSubscriber<string>(HubPresenceEndpoint); }
@@ -55,6 +55,14 @@ namespace ErenshorFollow
             return true;
         }
 
+        // A registered Hub IPC function is authoritative proof that Hub is loaded, independent of
+        // whether this second's describe payload happened to be usable.
+        internal static bool IsHubPresent()
+        {
+            ProbeHub();
+            return _hubState.Present;
+        }
+
         internal static bool IsHubAvailable()
         {
             ProbeHub();
@@ -71,13 +79,22 @@ namespace ErenshorFollow
         {
             if (Time.unscaledTime < _nextHubProbe) return;
             _nextHubProbe = Time.unscaledTime + HubProbeSeconds;
-            _hubState = new SuiteHubPresenceState(false, false);
+            _hubState = new SuiteHubPresenceState(false, false, false);
+            bool endpointPresent = false;
             try
             {
-                if (_hubPresence == null || !_hubPresence.HasFunction) return;
-                _hubState = SuiteHubPresencePolicy.Parse(_hubPresence.InvokeFunc());
+                endpointPresent = _hubPresence != null && _hubPresence.HasFunction;
+                if (!endpointPresent) return;
+                string payload = null;
+                try { payload = _hubPresence.InvokeFunc(); } catch { }
+                _hubState = SuiteHubPresencePolicy.FromEndpoint(true, payload);
             }
-            catch { _hubState = new SuiteHubPresenceState(false, false); }
+            catch
+            {
+                _hubState = endpointPresent
+                    ? new SuiteHubPresenceState(true, false, false)
+                    : new SuiteHubPresenceState(false, false, false);
+            }
         }
 
         internal static void Reset()
@@ -87,7 +104,7 @@ namespace ErenshorFollow
             _canMoveLatched = false;
             _acquired = false;
             _nextHubProbe = 0f;
-            _hubState = new SuiteHubPresenceState(false, false);
+            _hubState = new SuiteHubPresenceState(false, false, false);
             _hubPresence = null;
         }
 

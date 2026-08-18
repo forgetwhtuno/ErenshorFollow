@@ -77,7 +77,8 @@ namespace ErenshorFollow
         {
             switch (actionId)
             {
-                case "closePanel": return FollowUiSurfaceRouter.CloseAllVisuals() ? "ok" : "rejected";
+                case "openPanel": return FollowControlApi.OpenPanel() ? "ok" : "rejected";
+                case "closePanel": return FollowControlApi.ClosePanel() ? "ok" : "rejected";
                 case "stop": return FollowControlApi.TryStop() ? "ok" : "rejected";
                 case "pauseExpedition": return FollowControlApi.TryPauseExpedition() ? "ok" : "rejected";
                 case "resumeExpedition": return FollowControlApi.TryResumeExpedition() ? "ok" : "rejected";
