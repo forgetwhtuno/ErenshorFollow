@@ -23,7 +23,7 @@ function Invoke-StandaloneSuite([string]$Name, [string[]]$Sources, [string]$Csc)
     New-Item -ItemType Directory -Path $outputDir | Out-Null
     try {
         $output = Join-Path $outputDir ($Name + ".exe")
-        $arguments = @("/nologo", "/target:exe", "/optimize+", ('/out:"{0}"' -f $output)) + $Sources
+        $arguments = @("/nologo", "/target:exe", "/optimize+", ('/out:{0}' -f $output)) + $Sources
         & $Csc $arguments
         if ($LASTEXITCODE -ne 0) { throw "$Name compilation failed." }
         & $output
