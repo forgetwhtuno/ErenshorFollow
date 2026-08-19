@@ -78,8 +78,30 @@ namespace ErenshorFollow
         private static Vector3 _expeditionCrossingTarget;
         private static float _expeditionCrossingUntil;
 
-        private const float StopDistance = 3.0f;
-        private const float ResumeDistance = 4.5f;
+        // Local-obstacle recovery state (see FollowLocalObstaclePolicy). Kept separate from the
+        // pre-existing route/progress fields above so the proven ordinary repath/partial-path/no-progress
+        // logic is untouched; these only feed the classification of WHY a repath is needed and the
+        // trailing-target/side-step computation.
+        private static readonly NavMeshPath SidestepPath = new NavMeshPath();
+        private static Vector3 _leaderPositionLastFrame;
+        private static bool _hasLeaderPositionLastFrame;
+        private static Vector3 _leaderDirection;
+        private static Vector3 _leaderPositionAtLastPath;
+        private static bool _hasLeaderPositionAtLastPath;
+        private static Vector3 _positionAtLastPathAttempt;
+        private static bool _hasPositionAtLastPathAttempt;
+        private static bool _waypointIsSidestep;
+        private static string _lastFollowDiagnosticSignature;
+        private static bool _catchupActive;
+
+        // Nav-target hysteresis: stop once within StopDistance of the trailing point, don't resume
+        // moving until beyond ResumeDistance of it. Tightened in 0.6.8 for closer ordinary formation -
+        // with the 2m trailing offset (FollowLocalObstaclePolicy.TrailDistance) this settles the player
+        // roughly 0.8-3.2m behind the leader when idle/waiting, and resumes movement well before the
+        // gap reaches the catch-up band. This is deliberately separate from the formation/catch-up speed
+        // bands below, which are measured against the leader's REAL position, not this nav target.
+        private const float StopDistance = 1.2f;
+        private const float ResumeDistance = 2.2f;
         private const float ProgressDistance = 0.2f;
         private const float RouteRetrySeconds = 3f;
         // Match the already-proven Expedition transition lifecycle rather than assuming sceneLoaded means
@@ -212,6 +234,13 @@ namespace ErenshorFollow
             _expeditionCrossingHandoff = false;
             _expeditionCrossingTarget = Vector3.zero;
             _expeditionCrossingUntil = 0f;
+            _hasLeaderPositionLastFrame = false;
+            _leaderDirection = Vector3.zero;
+            _hasLeaderPositionAtLastPath = false;
+            _hasPositionAtLastPathAttempt = false;
+            _waypointIsSidestep = false;
+            _catchupActive = false;
+            _lastFollowDiagnosticSignature = null;
 
             // LeaderController sets its leg active before it calls FollowController.Start(), so this cleanly
             // distinguishes ordinary /efollow from the existing Lead/Expedition movement substrate without
@@ -289,6 +318,13 @@ namespace ErenshorFollow
             _expeditionCrossingHandoff = false;
             _expeditionCrossingTarget = Vector3.zero;
             _expeditionCrossingUntil = 0f;
+            _hasLeaderPositionLastFrame = false;
+            _leaderDirection = Vector3.zero;
+            _hasLeaderPositionAtLastPath = false;
+            _hasPositionAtLastPathAttempt = false;
+            _waypointIsSidestep = false;
+            _catchupActive = false;
+            _lastFollowDiagnosticSignature = null;
             DirectIntent.Cancel();
             State = DriveState.Idle;
         }
@@ -371,10 +407,43 @@ namespace ErenshorFollow
                 return true;
             }
             Vector3 from = player.transform.position;
-            Vector3 to = crossingHandoff ? _expeditionCrossingTarget : _target.transform.position;
+            Vector3 leaderPosition = crossingHandoff ? _expeditionCrossingTarget : _target.transform.position;
+            Vector3 to = leaderPosition;
+            if (!crossingHandoff)
+            {
+                // Track the leader's recent heading (a cheap position diff, not a NavMesh query) so the
+                // player can aim at a point behind the leader instead of its exact transform. The player
+                // does not need to stand on the leader's exact spot, and this keeps both actors from
+                // needing the identical tight gap (e.g. a narrow space beside a tree) at the same moment.
+                if (_hasLeaderPositionLastFrame)
+                {
+                    Vector3 headingDelta = leaderPosition - _leaderPositionLastFrame;
+                    headingDelta.y = 0f;
+                    if (headingDelta.sqrMagnitude > 0.04f) _leaderDirection = headingDelta.normalized;
+                }
+                _leaderPositionLastFrame = leaderPosition;
+                _hasLeaderPositionLastFrame = true;
+
+                float trailingX, trailingZ;
+                FollowLocalObstaclePolicy.TrailingTarget(leaderPosition.x, leaderPosition.z,
+                    _leaderDirection.x, _leaderDirection.z, FollowLocalObstaclePolicy.TrailDistance,
+                    out trailingX, out trailingZ);
+                to = new Vector3(trailingX, leaderPosition.y, trailingZ);
+            }
             Vector3 flat = to - from;
             flat.y = 0f;
             float distance = flat.magnitude;
+
+            // How far behind the leader the player REALLY is, independent of the trailing nav-target -
+            // "where do I walk to" and "how far behind am I" are deliberately different questions (see
+            // FollowLocalObstaclePolicy). Drives the formation/catch-up speed band and diagnostics only;
+            // it never affects the CalculatePath destination itself.
+            float leaderActualDistance = crossingHandoff ? distance : HorizontalDistance(from, leaderPosition);
+            FollowFormationBand formationBand = crossingHandoff
+                ? FollowFormationBand.Normal
+                : FollowLocalObstaclePolicy.ClassifyFormation(leaderActualDistance, _catchupActive);
+            _catchupActive = !crossingHandoff && FollowLocalObstaclePolicy.IsCatchUpActive(formationBand);
+            float catchupMultiplier = crossingHandoff ? 1f : FollowLocalObstaclePolicy.FormationSpeedMultiplier(formationBand);
             if (!crossingHandoff && _waitingAtTarget && distance < ResumeDistance)
             {
                 State = DriveState.Waiting;
@@ -404,41 +473,90 @@ namespace ErenshorFollow
             {
                 _nextPathTime = Time.time + 0.35f;
                 _lastPathAttemptAt = Time.time;
-                NavMeshHit fromHit = new NavMeshHit();
-                NavMeshHit toHit = new NavMeshHit();
-                bool sampled = NavMesh.SamplePosition(from, out fromHit, 7f, NavMesh.AllAreas) &&
-                                NavMesh.SamplePosition(to, out toHit, 8f, NavMesh.AllAreas);
-                if (sampled && NavMesh.CalculatePath(fromHit.position, toHit.position, NavMesh.AllAreas, Path) &&
-                    Path.status != NavMeshPathStatus.PathInvalid && Path.corners != null && Path.corners.Length > 1)
+
+                // Classify WHY the previous cycle failed to progress before touching any of that state,
+                // so a moving leader or a leader who is simply far away is never treated the same as a
+                // player physically wedged against geometry. See FollowLocalObstaclePolicy.
+                bool previousAttemptHadNoRoute = !_hasWaypoint;
+                bool leaderMovedSincePath = crossingHandoff || !_hasLeaderPositionAtLastPath ||
+                    HorizontalDistance(to, _leaderPositionAtLastPath) >= FollowLocalObstaclePolicy.LeaderMovedInvalidatesPathDistance;
+                float movementSinceLastAttempt = _hasPositionAtLastPathAttempt
+                    ? HorizontalDistance(from, _positionAtLastPathAttempt) : float.MaxValue;
+                FollowStallReason stallReason = FollowLocalObstaclePolicy.Classify(
+                    previousAttemptHadNoRoute, leaderMovedSincePath, leaderActualDistance, _hasWaypoint, movementSinceLastAttempt);
+                FollowRepathStrategy strategy = crossingHandoff
+                    ? FollowRepathStrategy.Plain : FollowLocalObstaclePolicy.ChooseStrategy(stallReason);
+
+                // A player physically blocked by local geometry (e.g. a tree the coarse corner sequence
+                // walked straight at) gets a bounded lateral probe FIRST: repathing from the exact spot
+                // that is blocked regenerates the same corners into the same obstacle. Only two candidate
+                // points, both NavMesh-sampled and CalculatePath-verified like any other approach point -
+                // this never invents an unproven route.
+                bool resolvedBySidestep = false;
+                if (strategy == FollowRepathStrategy.Sidestep)
                 {
-                    _waypoint = Path.corners[1];
-                    _hasNextCorner = Path.corners.Length > 2;
-                    _nextCorner = _hasNextCorner ? Path.corners[2] : Vector3.zero;
-                    _hasWaypoint = true;
-                    if (Path.status == NavMeshPathStatus.PathComplete)
+                    Vector3 steerDirection = _hasWaypoint ? (_waypoint - from) : (to - from);
+                    steerDirection.y = 0f;
+                    if (steerDirection.sqrMagnitude > 0.0001f)
                     {
-                        _routeFailureSince = 0f;
-                        _hasPartialEndpoint = false;
+                        float leftX, leftZ, rightX, rightZ;
+                        FollowLocalObstaclePolicy.SidestepCandidates(from.x, from.z, steerDirection.x, steerDirection.z,
+                            FollowLocalObstaclePolicy.SidestepRadius, out leftX, out leftZ, out rightX, out rightZ);
+                        resolvedBySidestep =
+                            TrySidestepWaypoint(from, new Vector3(leftX, from.y, leftZ)) ||
+                            TrySidestepWaypoint(from, new Vector3(rightX, from.y, rightZ));
+                    }
+                }
+
+                if (!resolvedBySidestep)
+                {
+                    NavMeshHit fromHit = new NavMeshHit();
+                    NavMeshHit toHit = new NavMeshHit();
+                    bool sampled = NavMesh.SamplePosition(from, out fromHit, 7f, NavMesh.AllAreas) &&
+                                    NavMesh.SamplePosition(to, out toHit, 8f, NavMesh.AllAreas);
+                    if (sampled && NavMesh.CalculatePath(fromHit.position, toHit.position, NavMesh.AllAreas, Path) &&
+                        Path.status != NavMeshPathStatus.PathInvalid && Path.corners != null && Path.corners.Length > 1)
+                    {
+                        _waypoint = Path.corners[1];
+                        _hasNextCorner = Path.corners.Length > 2;
+                        _nextCorner = _hasNextCorner ? Path.corners[2] : Vector3.zero;
+                        _hasWaypoint = true;
+                        _waypointIsSidestep = false;
+                        if (Path.status == NavMeshPathStatus.PathComplete)
+                        {
+                            _routeFailureSince = 0f;
+                            _hasPartialEndpoint = false;
+                        }
+                        else
+                        {
+                            Vector3 endpoint = Path.corners[Path.corners.Length - 1];
+                            bool changed = !_hasPartialEndpoint || HorizontalDistance(endpoint, _lastPartialEndpoint) > 0.75f;
+                            _lastPartialEndpoint = endpoint;
+                            _hasPartialEndpoint = true;
+                            if (changed || HorizontalDistance(from, _lastProgressPosition) > ProgressDistance)
+                                _routeFailureSince = Time.time;
+                            else if (_routeFailureSince <= 0f)
+                                _routeFailureSince = Time.time;
+                            State = DriveState.PartialPathRetry;
+                        }
                     }
                     else
                     {
-                        Vector3 endpoint = Path.corners[Path.corners.Length - 1];
-                        bool changed = !_hasPartialEndpoint || HorizontalDistance(endpoint, _lastPartialEndpoint) > 0.75f;
-                        _lastPartialEndpoint = endpoint;
-                        _hasPartialEndpoint = true;
-                        if (changed || HorizontalDistance(from, _lastProgressPosition) > ProgressDistance)
-                            _routeFailureSince = Time.time;
-                        else if (_routeFailureSince <= 0f)
-                            _routeFailureSince = Time.time;
+                        _hasWaypoint = false;
+                        if (_routeFailureSince <= 0f) _routeFailureSince = Time.time;
                         State = DriveState.PartialPathRetry;
                     }
                 }
-                else
+
+                _positionAtLastPathAttempt = from;
+                _hasPositionAtLastPathAttempt = true;
+                if (!crossingHandoff)
                 {
-                    _hasWaypoint = false;
-                    if (_routeFailureSince <= 0f) _routeFailureSince = Time.time;
-                    State = DriveState.PartialPathRetry;
+                    _leaderPositionAtLastPath = to;
+                    _hasLeaderPositionAtLastPath = true;
                 }
+                LogFollowDiagnostic(stallReason, resolvedBySidestep, leaderActualDistance, to, movementSinceLastAttempt,
+                    formationBand, catchupMultiplier, player);
             }
             float noProgressSeconds = Time.time - _lastProgressTime;
             bool noProgress = noProgressSeconds >= RouteRetrySeconds;
@@ -498,10 +616,19 @@ namespace ErenshorFollow
             direction.Normalize();
             float speed = player.Myself.MyStats == null ? 3.5f : player.Myself.MyStats.actualRunSpeed;
             if (speed < 1f) speed = 3.5f;
+            // Bounded, modest catch-up: leader and player both move at their own native actualRunSpeed
+            // with no multiplier by default, so once behind on a straightaway the player is otherwise
+            // mathematically unable to close the gap. The multiplier only ever applies on top of the
+            // player's own native speed (never a hardcoded number), only inside the CatchUp/StrongCatchUp
+            // bands, and is never written back to MyStats - it returns to 1.0x immediately once the
+            // formation band drops back to Normal/Close.
+            float appliedSpeed = speed * catchupMultiplier;
             float turnAngle = Vector3.Angle(player.transform.forward, direction);
-            State = turnAngle > 35f ? DriveState.Turning : (Path.status == NavMeshPathStatus.PathPartial ? DriveState.PartialPathRetry : DriveState.Moving);
+            State = turnAngle > 35f ? DriveState.Turning :
+                (_waypointIsSidestep ? DriveState.RecoveryRepath :
+                (Path.status == NavMeshPathStatus.PathPartial ? DriveState.PartialPathRetry : DriveState.Moving));
             player.transform.rotation = Quaternion.RotateTowards(player.transform.rotation, Quaternion.LookRotation(direction), 360f * Time.deltaTime);
-            controller.SimpleMove(direction * speed);
+            controller.SimpleMove(direction * appliedSpeed);
             SetMoving(player, true);
             try { player.UpdateAnimRun(); } catch { }
             return true;
@@ -955,6 +1082,13 @@ namespace ErenshorFollow
             _hasPartialEndpoint = false;
             _recoveryAttempts = 0;
             _nextRecoveryAt = 0f;
+            _hasLeaderPositionLastFrame = false;
+            _leaderDirection = Vector3.zero;
+            _hasLeaderPositionAtLastPath = false;
+            _hasPositionAtLastPathAttempt = false;
+            _waypointIsSidestep = false;
+            _catchupActive = false;
+            _lastFollowDiagnosticSignature = null;
         }
 
         private static void ResetRouteStateAfterRebind()
@@ -1013,6 +1147,77 @@ namespace ErenshorFollow
             a.y = 0f;
             b.y = 0f;
             return Vector3.Distance(a, b);
+        }
+
+        // Attempts one lateral local-obstacle probe point. Uses its own NavMeshPath buffer so a failed
+        // probe can never corrupt the accepted `Path` the ordinary repath block relies on. Only accepts
+        // the candidate when it is both NavMesh-reachable AND meaningfully different from the player's
+        // current (stuck) position - the same acceptance bar as any other approach point in this mod.
+        private static bool TrySidestepWaypoint(Vector3 from, Vector3 probe)
+        {
+            NavMeshHit hit;
+            if (!NavMesh.SamplePosition(probe, out hit, FollowLocalObstaclePolicy.SidestepRadius, NavMesh.AllAreas)) return false;
+            if (HorizontalDistance(from, hit.position) < 0.3f) return false;
+            if (!NavMesh.CalculatePath(from, hit.position, NavMesh.AllAreas, SidestepPath)) return false;
+            if (SidestepPath.status == NavMeshPathStatus.PathInvalid || SidestepPath.corners == null || SidestepPath.corners.Length < 2) return false;
+            _waypoint = SidestepPath.corners[1];
+            _hasNextCorner = SidestepPath.corners.Length > 2;
+            _nextCorner = _hasNextCorner ? SidestepPath.corners[2] : Vector3.zero;
+            _hasWaypoint = true;
+            _routeFailureSince = 0f;
+            _waypointIsSidestep = true;
+            return true;
+        }
+
+        // Bounded diagnostic: only logs when the dedupe signature actually changes (a real repath/state
+        // change/failure), never per frame. Mirrors the exact field set requested for player-follow
+        // navigation investigation.
+        private static void LogFollowDiagnostic(FollowStallReason reason, bool resolvedBySidestep,
+            float leaderDistance, Vector3 sampledTarget, float movementDelta,
+            FollowFormationBand formationBand, float catchupMultiplier, PlayerControl player)
+        {
+            string pathStatus = resolvedBySidestep ? "Sidestep" : Path.status.ToString();
+            int corners = resolvedBySidestep
+                ? (SidestepPath.corners == null ? 0 : SidestepPath.corners.Length)
+                : (Path.corners == null ? 0 : Path.corners.Length);
+            float stuckSeconds = _lastProgressTime > 0f ? Math.Max(0f, Time.time - _lastProgressTime) : 0f;
+            bool catchupActive = FollowLocalObstaclePolicy.IsCatchUpActive(formationBand);
+            string signature = reason + "|" + pathStatus + "|" + corners + "|" + _hasWaypoint + "|" + formationBand;
+            if (string.Equals(signature, _lastFollowDiagnosticSignature, StringComparison.Ordinal)) return;
+            _lastFollowDiagnosticSignature = signature;
+            // normalSpeed/appliedSpeed mirror the exact formula used at the real SimpleMove call below -
+            // computed independently here only so the diagnostic can log at the repath-cycle cadence
+            // rather than the per-frame steering cadence. Never itself applied to movement.
+            float normalSpeed = player != null && player.Myself != null && player.Myself.MyStats != null
+                ? player.Myself.MyStats.actualRunSpeed : 3.5f;
+            if (normalSpeed < 1f) normalSpeed = 3.5f;
+            float appliedSpeed = normalSpeed * catchupMultiplier;
+            Verbose("player_follow_path leaderDistance=" + leaderDistance.ToString("F1") +
+                " sampledTarget=" + FormatVector(sampledTarget) +
+                " pathStatus=" + pathStatus +
+                " corners=" + corners +
+                " currentCorner=" + (_hasWaypoint ? FormatVector(_waypoint) : "none") +
+                " repathReason=" + reason +
+                " stuckSeconds=" + stuckSeconds.ToString("F1") +
+                " movementDelta=" + (float.IsInfinity(movementDelta) || movementDelta >= float.MaxValue ? "n/a" : movementDelta.ToString("F2")) +
+                " desiredDistance=" + FollowLocalObstaclePolicy.DesiredFollowDistance.ToString("F1") +
+                " catchupBand=" + formationBand +
+                " leashDistance=" + FollowLocalObstaclePolicy.LeaderTooFarDistance.ToString("F1") +
+                " normalSpeed=" + normalSpeed.ToString("F2") +
+                " appliedSpeed=" + appliedSpeed.ToString("F2") +
+                " catchupActive=" + catchupActive);
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return "(" + value.x.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + ", " +
+                   value.y.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + ", " +
+                   value.z.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + ")";
+        }
+
+        private static void Verbose(string message)
+        {
+            try { if (ErenshorFollowPlugin.Instance != null) ErenshorFollowPlugin.Instance.LogDebug(message); } catch { }
         }
 
         private static void ResetProgress(Vector3 position, float targetDistance)

@@ -26,6 +26,7 @@ namespace ErenshorFollow
         private static readonly Color ButtonHover = new Color32(31, 97, 122, 245);
         private static readonly Color ButtonPressed = new Color32(8, 171, 219, 245);
         private static readonly Color CyanAccent = new Color32(8, 171, 219, 245);
+        private static readonly Color SelectedFill = new Color32(13, 84, 107, 245);
         private static readonly Color TitleCyan = new Color32(143, 224, 255, 255);
         private static readonly Color HintCyan = new Color32(143, 199, 224, 255);
 
@@ -38,6 +39,12 @@ namespace ErenshorFollow
         private static bool _open;
         private static float _lastActivatedAt = -1f;
         private static float _nextRouteRefresh;
+        // A definitive Start rejection is sticky: it survives the per-frame RefreshLeaderAdmission()
+        // hint-text refresh until the player takes an action that could change the outcome (picks a
+        // different destination, retries Start, or closes the window). Without this, the reason set by
+        // StartSelected() was overwritten by the generic hint on the very next Tick() -- a one-frame
+        // flash that was the actual root cause of "no visible result" on a rejected Start.
+        private static string _rejectionMessage;
 
         private static GameObject _root, _panelObject;
         private static RectTransform _panel, _destinationContent;
@@ -63,6 +70,7 @@ namespace ErenshorFollow
             _selectedDestination = null;
             _selectedRoute.Clear();
             _nextRouteRefresh = 0f;
+            _rejectionMessage = null;
 
             if (!EnsureBuilt()) return false;
             RefreshRoutes(true);
@@ -181,6 +189,9 @@ namespace ErenshorFollow
         {
             ExpeditionRouteChoice choice = FindChoice(destination);
             if (choice == null) return;
+            // A new choice is a fresh attempt; a rejection reason tied to the old destination no longer
+            // applies and must not keep shadowing the (now neutral) hint text.
+            _rejectionMessage = null;
             ApplySelection(choice);
             RebuildDestinationList();
             TouchActivation();
@@ -189,18 +200,46 @@ namespace ErenshorFollow
         private static void StartSelected()
         {
             if (string.IsNullOrWhiteSpace(_selectedDestination)) return;
+            _rejectionMessage = null;
+            // Immediate, synchronous, truthful feedback the instant the click is processed: this is not
+            // a claim of success, only that an attempt is in flight. Disabling the button also prevents
+            // a second click from racing a result that resolves in the same frame.
+            if (_startButton != null) _startButton.interactable = false;
+            SetMessage("Starting expedition to " + _selectedDestination + "...", false);
+
             string failure;
+            ExpeditionStartOutcome outcome;
             if (!ExpeditionCoordinator.TryStartRouteExact(_leaderTracking, _selectedDestination,
-                ExpeditionInitiation.ActionMenu, out failure))
+                ExpeditionInitiation.ActionMenu, out failure, out outcome))
             {
-                SetMessage(string.IsNullOrWhiteSpace(failure) ? "The expedition could not start safely." : failure, true);
+                _rejectionMessage = string.IsNullOrWhiteSpace(failure) ? DefaultRejectionText(outcome) : failure;
+                SetMessage(_rejectionMessage, true);
+                // Refresh live route/leader state (the failure may be stale-data driven), but the setup
+                // window itself always stays open on a rejection -- no silent close, no auto-retry.
                 RefreshRoutes(true);
                 RefreshLeaderAdmission();
                 return;
             }
 
+            // Accepted: native leg start already returned true, and TryStartPrepared has already flipped
+            // the session to Traveling and announced it in chat. Hand off to the persistent status panel
+            // rather than leaving the player looking at a setup window for an expedition already under way.
             Close("expedition started");
             TravelStatusOverlay.ShowExpeditionStatus();
+        }
+
+        // Fallback wording only: every current rejection path already supplies a specific failure string,
+        // so this keys off the typed outcome purely as a safety net if one somehow does not.
+        private static string DefaultRejectionText(ExpeditionStartOutcome outcome)
+        {
+            switch (outcome)
+            {
+                case ExpeditionStartOutcome.AlreadyActive: return "Another expedition is already active.";
+                case ExpeditionStartOutcome.InvalidLeader: return "The intended leader is no longer available.";
+                case ExpeditionStartOutcome.NoRoute: return "No safe route is currently available to that destination.";
+                case ExpeditionStartOutcome.NotReady: return "Finish combat before starting an expedition.";
+                default: return "The expedition could not start safely.";
+            }
         }
 
         private static void RefreshLeaderAdmission()
@@ -209,11 +248,28 @@ namespace ErenshorFollow
             bool valid = LeaderMatches(_leaderTracking, avatar);
             if (_startButton != null) _startButton.interactable = valid && _selectedRoute.Count >= 2;
             if (!valid)
+            {
+                // A live blocking condition always supersedes a stale rejection reason -- it is a fresher,
+                // more specific truth about why Start would fail again right now.
+                _rejectionMessage = null;
                 SetMessage("Leader unavailable: the exact selected Sim must still be alive, local, and in your party.", true);
+            }
             else if (Choices.Count == 0)
+            {
+                _rejectionMessage = null;
                 SetMessage("No reachable atlas destinations currently begin through a verified live zoneline.", false);
+            }
+            else if (_rejectionMessage != null)
+            {
+                // Keep showing the specific reason from the last Start attempt. This is the fix for the
+                // actual reported bug: Tick() calls this every frame, and the previous version always fell
+                // through to the generic hint below, so a real rejection was visible for at most one frame.
+                SetMessage(_rejectionMessage, true);
+            }
             else
+            {
                 SetMessage("Each current leg is revalidated against a live zoneline before travel.", false);
+            }
         }
 
         private static bool LeaderMatches(SimPlayerTracking tracking, SimPlayer avatar)
@@ -283,8 +339,14 @@ namespace ErenshorFollow
                 _destinationContent.sizeDelta = Vector2.zero;
                 VerticalLayoutGroup layout = contentObject.GetComponent<VerticalLayoutGroup>();
                 layout.padding = new RectOffset(4, 4, 4, 4);
-                layout.spacing = 4f;
-                layout.childControlHeight = false;
+                layout.spacing = ExpeditionSetupLayoutPolicy.RowSpacing;
+                // childControlHeight was false, which left each row's actual RectTransform height at
+                // Unity's default 100px (the LayoutElement below only affects layout POSITIONING under
+                // that setting, not the row's own rect size) regardless of the intended ~30px row metric.
+                // That default-size rect is what rendered as the oversized destination buttons. true here
+                // matches the already-working Sim Actions convention (see SimActionMenu.cs) and makes the
+                // LayoutElement authoritative for the actual rendered/clickable row size.
+                layout.childControlHeight = true;
                 layout.childControlWidth = true;
                 layout.childForceExpandHeight = false;
                 layout.childForceExpandWidth = true;
@@ -350,9 +412,8 @@ namespace ErenshorFollow
                 if (!choice.Nearby && !wroteOther) { AddListSection("OTHER REACHABLE ZONES"); wroteOther = true; }
                 string destination = choice.DestinationName;
                 bool selected = destination.Equals(_selectedDestination, StringComparison.OrdinalIgnoreCase);
-                RectTransform row = MakeListRow("Destination", 30f);
-                AddButton(row, (selected ? "• " : string.Empty) + destination,
-                    delegate { SelectDestination(destination); }, false);
+                RectTransform row = MakeListRow("Destination", ExpeditionSetupLayoutPolicy.DestinationRowHeight);
+                AddDestinationButton(row, destination, selected, delegate { SelectDestination(destination); });
             }
             Canvas.ForceUpdateCanvases();
             LayoutRebuilder.ForceRebuildLayoutImmediate(_destinationContent);
@@ -360,7 +421,7 @@ namespace ErenshorFollow
 
         private static void AddListSection(string text)
         {
-            RectTransform row = MakeListRow("Section", 22f);
+            RectTransform row = MakeListRow("Section", ExpeditionSetupLayoutPolicy.SectionRowHeight);
             AddText(row, text, 9, TextAlignmentOptions.MidlineLeft, HintCyan, false);
         }
 
@@ -369,10 +430,36 @@ namespace ErenshorFollow
             GameObject go = new GameObject(name, typeof(RectTransform), typeof(LayoutElement));
             RectTransform rt = go.GetComponent<RectTransform>();
             rt.SetParent(_destinationContent, false);
+            // Explicit top-anchored, fixed-height rect: belt-and-suspenders with childControlHeight=true
+            // above so a row is never left at Unity's default RectTransform size under any layout-group
+            // configuration.
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, height);
             LayoutElement e = go.GetComponent<LayoutElement>();
             e.preferredHeight = height;
             e.minHeight = height;
+            // No row may absorb leftover viewport space into a tall blank button (SimActionMenu applies
+            // the same guard for its action rows).
+            e.flexibleHeight = 0f;
             return rt;
+        }
+
+        // A selected destination gets a distinct fill/text treatment, not just the bullet glyph, so the
+        // current pick reads clearly at a glance rather than requiring the player to read every label.
+        private static void AddDestinationButton(RectTransform row, string destination, bool selected,
+            UnityEngine.Events.UnityAction action)
+        {
+            Button button = AddButton(row, (selected ? "• " : string.Empty) + destination, action, false);
+            if (!selected) return;
+            ColorBlock colors = button.colors;
+            colors.normalColor = SelectedFill;
+            colors.highlightedColor = SelectedFill;
+            colors.selectedColor = SelectedFill;
+            button.colors = colors;
+            TextMeshProUGUI label = button.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label != null) label.color = TitleCyan;
         }
 
         private static void RefreshStaticText()
@@ -448,6 +535,7 @@ namespace ErenshorFollow
             _selectedRoute.Clear();
             Choices.Clear();
             _nextRouteRefresh = 0f;
+            _rejectionMessage = null;
             if (_panelObject != null) _panelObject.SetActive(false);
             FollowUiDragGuard.ForceReleaseIfOwned();
             Debug("setup closed; reason=" + reason);

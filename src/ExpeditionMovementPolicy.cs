@@ -4,6 +4,7 @@ namespace ErenshorFollow
     {
         Waiting,
         ProgressObserved,
+        ArrivedAtTarget,
         ReissueNativeOrder,
         TryNextRouteCandidate,
         FailMovementOwnership
@@ -20,7 +21,8 @@ namespace ErenshorFollow
         AgentStopped,
         DestinationNotApplied,
         PathInvalid,
-        NoProgress
+        NoProgress,
+        ApproachReachedTraversalPending
     }
 
     internal struct ExpeditionMovementObservation
@@ -39,6 +41,7 @@ namespace ErenshorFollow
         internal float MovedDistance;
         internal float DistanceImprovement;
         internal float VelocityMagnitude;
+        internal float DistanceToTarget;
         internal int ReissueCount;
     }
 
@@ -55,6 +58,11 @@ namespace ErenshorFollow
         internal const float ProgressImprovement = 0.35f;
         internal const float MovingVelocity = 0.10f;
         internal const int MaximumReissues = 2;
+        // Mirrors ExpeditionCrossingPolicy.ApproachReadyDistance: the distance at which the crossing
+        // state machine already considers the approach reached and is ready to hand off to trigger
+        // traversal. Keeping the two equal means arrival can never be classified as a stall in the
+        // exact window where the crossing machine is willing to take over.
+        internal const float ArrivalRadius = 1.75f;
 
         internal static ExpeditionMovementDecision Evaluate(ExpeditionMovementObservation observation,
             out ExpeditionMovementIssue issue)
@@ -64,6 +72,20 @@ namespace ErenshorFollow
             {
                 issue = ExpeditionMovementIssue.CombatControl;
                 return ExpeditionMovementDecision.Waiting;
+            }
+
+            // Arrival is checked BEFORE any stall reasoning. A leader that has genuinely reached its
+            // ordered approach point reports MovedDistance ~= 0, DistanceImprovement ~= 0 and
+            // velocity 0.00 - numerically identical to an agent that never moved at all. Without an
+            // explicit remaining-distance test the two are indistinguishable, so a successful arrival
+            // at a zoneline approach was being reissued twice and then failed as
+            // "the native movement owner made no useful progress", which is precisely the live
+            // Failure A signature (destination=0.0m-from-order, PathComplete, velocity=0.00). The
+            // correct next step there is trigger traversal, not another copy of the same order.
+            if (observation.DistanceToTarget <= ArrivalRadius)
+            {
+                issue = ExpeditionMovementIssue.ApproachReachedTraversalPending;
+                return ExpeditionMovementDecision.ArrivedAtTarget;
             }
 
             if (observation.MovedDistance >= ProgressDistance ||
@@ -138,6 +160,7 @@ namespace ErenshorFollow
                 case ExpeditionMovementIssue.DestinationNotApplied: return "the native NavMeshAgent did not retain the expedition destination";
                 case ExpeditionMovementIssue.PathInvalid: return "the native NavMeshAgent reported PathInvalid";
                 case ExpeditionMovementIssue.NoProgress: return "the native movement owner made no useful progress";
+                case ExpeditionMovementIssue.ApproachReachedTraversalPending: return "the leader reached the crossing approach; trigger traversal is pending";
                 default: return "native movement is pending";
             }
         }

@@ -53,6 +53,34 @@ namespace ErenshorFollow
             return ExpeditionStartAdmission.Allowed;
         }
 
+        // Maps the fine-grained identity/route admission reason onto the small outcome vocabulary the
+        // Start UI actually needs to branch on. Allowed has no outcome of its own: the caller still has
+        // to run the real leg-start call before it can claim Accepted.
+        internal static ExpeditionStartOutcome ToStartOutcome(ExpeditionStartAdmission admission)
+        {
+            switch (admission)
+            {
+                case ExpeditionStartAdmission.AlreadyActive: return ExpeditionStartOutcome.AlreadyActive;
+                case ExpeditionStartAdmission.MissingTracking:
+                case ExpeditionStartAdmission.IdentityMismatch:
+                case ExpeditionStartAdmission.LeftParty:
+                case ExpeditionStartAdmission.Unusable:
+                case ExpeditionStartAdmission.RemoteAuthority:
+                    return ExpeditionStartOutcome.InvalidLeader;
+                case ExpeditionStartAdmission.NoRoute: return ExpeditionStartOutcome.NoRoute;
+                default: return ExpeditionStartOutcome.Accepted;
+            }
+        }
+
+        // A terminal session (Cancelled/Failed) keeps exactly the same short visible window Arrived
+        // already gets from ExpeditionCoordinator's TerminalVisibleSeconds hold, instead of vanishing
+        // the instant Active flips to false. Silence on failure is the defect this task exists to fix.
+        internal static bool ShouldShowExpeditionSurface(ExpeditionState state, bool active)
+        {
+            return active || state == ExpeditionState.Arrived || state == ExpeditionState.Cancelled ||
+                state == ExpeditionState.Failed;
+        }
+
         internal static ExpeditionUiActionVisibility ResolveStatusActions(ExpeditionState state, bool active,
             bool verifiedArrival, bool campmasterAvailable, bool campmasterActive, bool campRequestPending, bool canReturn)
         {

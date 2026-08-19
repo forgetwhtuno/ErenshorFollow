@@ -353,8 +353,14 @@ namespace ErenshorFollow
             switch (expedition.State)
             {
                 case ExpeditionState.Transitioning:
-                    return leaderRoute + "\nChanging zones...  Reacquiring " + SafeName(expedition.LeaderName) + "..." +
-                        (string.IsNullOrWhiteSpace(remaining) ? string.Empty : "\n" + remaining);
+                    // Leader reacquisition and post-zone route/NavMesh readiness are two different waits.
+                    // The leader is already back by the time route readiness is pending, so continuing to
+                    // say "Reacquiring" here would be stale/misleading for what can be several more seconds.
+                    return expedition.RouteReadinessPending
+                        ? leaderRoute + "\nZone entered — checking route to " + SafeName(expedition.DestinationName) + "..." +
+                            (string.IsNullOrWhiteSpace(remaining) ? string.Empty : "\n" + remaining)
+                        : leaderRoute + "\nChanging zones...  Reacquiring " + SafeName(expedition.LeaderName) + "..." +
+                            (string.IsNullOrWhiteSpace(remaining) ? string.Empty : "\n" + remaining);
                 case ExpeditionState.Paused:
                     return leaderRoute + "\nPaused" + NextLine(expedition.NextZone, remaining);
                 case ExpeditionState.CombatInterrupted:
@@ -364,6 +370,15 @@ namespace ErenshorFollow
                     return leaderRoute + "\nRegrouping" + NextLine(expedition.NextZone, remaining);
                 case ExpeditionState.Arrived:
                     return "Arrived in " + SafeName(expedition.DestinationName);
+                case ExpeditionState.Cancelled:
+                    // A cancelled/failed session used to disappear the instant Active flipped to false,
+                    // relying entirely on a chat line the player could easily miss. It now gets the same
+                    // short terminal-visible window Arrived already had, with the real reason shown here.
+                    return leaderRoute + "\nCancelled" +
+                        (string.IsNullOrWhiteSpace(expedition.FailureDetail) ? string.Empty : ": " + expedition.FailureDetail);
+                case ExpeditionState.Failed:
+                    return leaderRoute + "\nFailed: " +
+                        (string.IsNullOrWhiteSpace(expedition.FailureDetail) ? "the expedition could not continue." : expedition.FailureDetail);
                 default:
                     return leaderRoute + "\nTraveling" + NextLine(expedition.NextZone, remaining);
             }
@@ -386,7 +401,7 @@ namespace ErenshorFollow
                 TouchActivation();
             }
 
-            if (expedition.Active || expedition.State == ExpeditionState.Arrived)
+            if (ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(expedition.State, expedition.Active))
             {
                 _followWaitingSince = -1f;
                 return OverlayMode.Expedition;

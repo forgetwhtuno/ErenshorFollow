@@ -15,7 +15,7 @@ namespace ErenshorFollow
             Say("[Erenshor Route Diag] Requested: " + (query.Length == 0 ? "<missing>" : query));
             if (query.Length == 0)
             {
-                Say("[Erenshor Route Diag] Usage: /elead diag <adjacent zone>");
+                Say("[Erenshor Route Diag] Usage: /elead diag <destination zone>");
                 return;
             }
 
@@ -33,8 +33,29 @@ namespace ErenshorFollow
             Say("[Erenshor Route Diag] Canonical destination: " + (canonical == null ? "<none>" : canonical));
             if (canonical == null)
             {
-                Say("[Erenshor Route Diag] No live named Zoneline matches that request.");
-                return;
+                // /elead itself supports world-atlas itineraries when the requested destination is not
+                // adjacent. Make the diagnostic follow the same decision tree instead of incorrectly
+                // stopping at "no live named Zoneline" for a valid multi-hop request such as Azure.
+                List<string> atlasRoute;
+                bool atlasAmbiguous;
+                string atlasFailure;
+                if (ZoneAtlasRoutePlanner.TryBuild(SceneManager.GetActiveScene().name, query,
+                    ExpeditionDestinationResolver.ListCanonicalNames(), out atlasRoute, out atlasAmbiguous, out atlasFailure) &&
+                    atlasRoute != null && atlasRoute.Count >= 2)
+                {
+                    Say("[Erenshor Route Diag] Atlas itinerary: " + string.Join(" -> ", atlasRoute.ToArray()));
+                    canonical = atlasRoute[1];
+                    Say("[Erenshor Route Diag] Current first hop: " + canonical);
+                }
+                else
+                {
+                    if (atlasAmbiguous)
+                        Say("[Erenshor Route Diag] Atlas destination is ambiguous; type a longer world-zone name.");
+                    else
+                        Say("[Erenshor Route Diag] No direct Zoneline or atlas itinerary matches that request" +
+                            (string.IsNullOrWhiteSpace(atlasFailure) ? "." : ": " + atlasFailure));
+                    return;
+                }
             }
 
             List<Zoneline> crossings = ExpeditionDestinationResolver.GetCrossings(canonical, true);
@@ -45,7 +66,7 @@ namespace ErenshorFollow
                 return;
             }
             Vector3 start = GameData.PlayerControl.transform.position;
-            LocalZoneRoutePlanner.Plan plan = LocalZoneRoutePlanner.Build(start, crossings);
+            LocalZoneRoutePlanner.Plan plan = LocalZoneRoutePlanner.Build(start, crossings, true);
             Say("[Erenshor Route Diag] Path start: player " + LocalZoneRoutePlanner.FormatVector(start) +
                 " | NavMesh sample=" + (plan.StartSampled ? "success " + LocalZoneRoutePlanner.FormatVector(plan.StartSamplePosition) : "failed"));
 

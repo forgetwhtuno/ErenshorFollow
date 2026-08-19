@@ -54,6 +54,7 @@ for path in (ROOT / "src").glob("*.cs"):
     # Strip strings/comments enough for brace counting; this is not a C# parser.
     stripped = re.sub(r'//.*', '', text)
     stripped = re.sub(r'"(?:\\.|[^"\\])*"', '""', stripped)
+    stripped = re.sub(r"'(?:\\.|[^'\\])*'", "''", stripped)
     check(stripped.count("{") == stripped.count("}"), f"balanced braces: {path.name}")
 
 print(f"All source-contract checks passed ({len(checks)} checks).")

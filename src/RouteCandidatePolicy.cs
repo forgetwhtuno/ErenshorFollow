@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace ErenshorFollow
 {
@@ -147,6 +148,24 @@ namespace ErenshorFollow
                     "startup NavMesh preflight is inconclusive; bounded native-navigation proof allowed");
 
             return new Evaluation(candidate, AcceptanceKind.Rejected, "no useful local route evidence");
+        }
+
+        // Bounded, single-line description of one candidate's measured geometry and verdict. Used by the
+        // live per-crossing diagnostic (LocalZoneRoutePlanner.DescribeReadiness) so a route-start failure
+        // can show WHY each sampled approach was rejected -- not just that zero were accepted -- without
+        // requiring a second live repro merely to add logging. Kept in this Unity-free file so the exact
+        // wording and field set is covered by a deterministic test rather than only exercised live.
+        internal static string DescribeCandidate(Candidate candidate, Evaluation evaluation)
+        {
+            if (candidate == null) return "candidate=missing";
+            string key = string.IsNullOrWhiteSpace(candidate.StableKey) ? "<unnamed>" : candidate.StableKey;
+            string result = evaluation == null ? "unevaluated" : evaluation.Acceptance.ToString();
+            string reason = evaluation == null ? "no evaluation" : evaluation.Reason;
+            return key + " sampled=" + candidate.Sampled + " path=" + candidate.Path + " corners=" + candidate.CornerCount +
+                " startDist=" + candidate.StartDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
+                " endpointDist=" + candidate.EndpointDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
+                " approachDist=" + candidate.ApproachDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
+                " result=" + result + " reason=" + (string.IsNullOrWhiteSpace(reason) ? "none" : reason);
         }
 
         internal static List<Evaluation> RankAccepted(IList<Candidate> candidates)

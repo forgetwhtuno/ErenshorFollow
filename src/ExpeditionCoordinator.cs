@@ -44,12 +44,13 @@ namespace ErenshorFollow
         {
             if (_session == null)
                 return new ExpeditionStatusSnapshot(0, false, ExpeditionState.Idle, ExpeditionObjective.Outbound,
-                    null, null, null, null, 0, ExpeditionPauseReason.None, 0);
+                    null, null, null, null, 0, ExpeditionPauseReason.None, 0, false, null);
 
             int remaining = Math.Max(0, _session.PlannedZones.Count - 1 - _session.CurrentRouteIndex);
             return new ExpeditionStatusSnapshot(_session.SessionId, !IsTerminal(_session.State), _session.State, _session.Objective,
                 _session.LeaderName, _session.DestinationName, _session.CurrentZone, _session.CurrentLegDestinationName,
-                remaining, _session.PauseReason, _session.CombatInterruptions);
+                remaining, _session.PauseReason, _session.CombatInterruptions, _session.RouteReadinessPending,
+                _session.FailureDetail);
         }
 
         internal static bool IsLeaderTracking(SimPlayerTracking tracking)
@@ -65,7 +66,8 @@ namespace ErenshorFollow
             route.Add(ActiveScene());
             if (destination != null) route.Add(destination.CanonicalName);
             string failure;
-            if (!TryStartPrepared(leader, destination, route, source, ExpeditionObjective.Outbound, out failure))
+            ExpeditionStartOutcome unusedOutcome;
+            if (!TryStartPrepared(leader, destination, route, source, ExpeditionObjective.Outbound, out failure, out unusedOutcome))
                 Say("[Erenshor Expedition] " + failure, "yellow");
         }
 
@@ -90,43 +92,69 @@ namespace ErenshorFollow
             }
 
             string failure;
-            if (!TryStartPrepared(leader, firstLeg, plannedZones, source, ExpeditionObjective.Outbound, out failure))
+            ExpeditionStartOutcome unusedOutcome;
+            if (!TryStartPrepared(leader, firstLeg, plannedZones, source, ExpeditionObjective.Outbound, out failure, out unusedOutcome))
                 Say("[Erenshor Expedition] " + failure, "yellow");
+        }
+
+        // Turns a fine-grained identity/route admission code into the exact wording the pre-refactor
+        // inline checks used, so the visible message did not change when this was wired to the shared,
+        // already-tested ExpeditionWorkflowPolicy.EvaluateStart policy instead of duplicating its logic.
+        // Unusable/RemoteAuthority intentionally share one branch: the original code chose between the
+        // two messages by re-checking IsRemoteHuman independently of which condition actually failed
+        // LeaderValid, and that same independent check is reproduced here.
+        private static string DescribeIdentityAdmission(ExpeditionStartAdmission admission, SimPlayer avatar)
+        {
+            switch (admission)
+            {
+                case ExpeditionStartAdmission.AlreadyActive:
+                    return "Another expedition is already active.";
+                case ExpeditionStartAdmission.MissingTracking:
+                case ExpeditionStartAdmission.LeftParty:
+                    return "The intended leader is no longer in your party.";
+                case ExpeditionStartAdmission.IdentityMismatch:
+                    return "The intended Sim identity is not currently loaded.";
+                case ExpeditionStartAdmission.Unusable:
+                case ExpeditionStartAdmission.RemoteAuthority:
+                    return avatar != null && CoopCompatibility.IsRemoteHuman(avatar)
+                        ? "That leader is controlled by another client."
+                        : "The intended leader is no longer a living local Sim in your party.";
+                default:
+                    return "The expedition could not start safely.";
+            }
         }
 
         // Setup-window entry point. The window stores only SimPlayerTracking plus a final destination.
         // Start re-resolves that exact tracking object's current avatar, re-runs local/party/remote/alive
         // admission, and rebuilds the atlas route against the CURRENT scene/live first-hop Zonelines. A
         // stale setup preview therefore cannot authorize movement after identity or route conditions change.
+        //
+        // The outcome out-param is the explicit Start-result contract the setup UI switches on instead of
+        // inferring success from "the button was clicked" or from parsing the failure string.
         internal static bool TryStartRouteExact(SimPlayerTracking tracking, string finalDestination,
-            ExpeditionInitiation source, out string failure)
+            ExpeditionInitiation source, out string failure, out ExpeditionStartOutcome outcome)
         {
             failure = null;
-            if (IsActive)
-            {
-                failure = "Another expedition is already active.";
-                TraceRejectedAttempt(source, finalDestination, failure);
-                return false;
-            }
-            if (tracking == null || !SimTrackingRebind.TrackingIsInPlayerGroup(tracking))
-            {
-                failure = "The intended leader is no longer in your party.";
-                TraceRejectedAttempt(source, finalDestination, failure);
-                return false;
-            }
+            outcome = ExpeditionStartOutcome.Rejected;
 
-            SimPlayer avatar = SimTrackingRebind.CurrentAvatar(tracking);
-            if (avatar == null || !SimTrackingRebind.AvatarMatchesTracking(tracking, avatar))
+            SimPlayer avatar = tracking == null ? null : SimTrackingRebind.CurrentAvatar(tracking);
+            bool trackingPresent = tracking != null;
+            bool sameTracking = avatar != null && SimTrackingRebind.AvatarMatchesTracking(tracking, avatar);
+            bool inParty = trackingPresent && SimTrackingRebind.TrackingIsInPlayerGroup(tracking);
+            // Folds the original LeaderValid(avatar)'s IsPlayerPartySim check into "usable" so the shared
+            // policy's boolean set still expresses the exact same three-way admission requirement.
+            bool usable = avatar != null && FollowController.IsUsableSim(avatar) && LeaderController.IsPlayerPartySim(avatar);
+            bool remoteAuthority = avatar != null && CoopCompatibility.IsRemoteHuman(avatar);
+
+            // Identity/party is resolved with a placeholder route count that can never itself trigger
+            // NoRoute, preserving the original check order (and its short-circuit: the atlas is not built
+            // at all while the leader is already known-invalid).
+            ExpeditionStartAdmission identity = ExpeditionWorkflowPolicy.EvaluateStart(
+                IsActive, trackingPresent, sameTracking, inParty, usable, remoteAuthority, 2);
+            if (identity != ExpeditionStartAdmission.Allowed)
             {
-                failure = "The intended Sim identity is not currently loaded.";
-                TraceRejectedAttempt(source, finalDestination, failure);
-                return false;
-            }
-            if (!LeaderValid(avatar))
-            {
-                failure = CoopCompatibility.IsRemoteHuman(avatar)
-                    ? "That leader is controlled by another client."
-                    : "The intended leader is no longer a living local Sim in your party.";
+                outcome = ExpeditionWorkflowPolicy.ToStartOutcome(identity);
+                failure = DescribeIdentityAdmission(identity, avatar);
                 TraceRejectedAttempt(source, finalDestination, failure);
                 return false;
             }
@@ -136,9 +164,13 @@ namespace ErenshorFollow
             List<string> route;
             bool ambiguous;
             string routeFailure;
-            if (!ZoneAtlasRoutePlanner.TryBuild(origin, finalDestination, liveFirstHops,
-                out route, out ambiguous, out routeFailure) || route.Count < 2)
+            bool routeBuilt = ZoneAtlasRoutePlanner.TryBuild(origin, finalDestination, liveFirstHops,
+                out route, out ambiguous, out routeFailure) && route.Count >= 2;
+            ExpeditionStartAdmission withRoute = ExpeditionWorkflowPolicy.EvaluateStart(
+                IsActive, trackingPresent, sameTracking, inParty, usable, remoteAuthority, routeBuilt ? route.Count : 0);
+            if (withRoute != ExpeditionStartAdmission.Allowed)
             {
+                outcome = ExpeditionWorkflowPolicy.ToStartOutcome(withRoute);
                 failure = string.IsNullOrWhiteSpace(routeFailure)
                     ? "No safe atlas route is currently available to that destination."
                     : routeFailure;
@@ -149,18 +181,20 @@ namespace ErenshorFollow
             ExpeditionDestination firstLeg = ExpeditionDestinationResolver.Resolve(route[1], out ambiguous);
             if (firstLeg == null || !SameScene(firstLeg.CanonicalName, route[1]))
             {
+                outcome = ExpeditionStartOutcome.NoRoute;
                 failure = "The first atlas hop to " + route[1] + " is not a verified live exit from this zone.";
                 TraceRejectedAttempt(source, finalDestination, failure);
                 return false;
             }
 
-            return TryStartPrepared(avatar, firstLeg, route, source, ExpeditionObjective.Outbound, out failure);
+            return TryStartPrepared(avatar, firstLeg, route, source, ExpeditionObjective.Outbound, out failure, out outcome);
         }
 
         private static bool TryStartPrepared(SimPlayer leader, ExpeditionDestination destination, IList<string> plannedZones,
-            ExpeditionInitiation source, ExpeditionObjective objective, out string failure)
+            ExpeditionInitiation source, ExpeditionObjective objective, out string failure, out ExpeditionStartOutcome outcome)
         {
             failure = null;
+            outcome = ExpeditionStartOutcome.Rejected;
             if (IsActive) Cancel("Starting a new expedition.");
             ClearSession();
             int pendingSessionId = _nextSessionId;
@@ -171,6 +205,7 @@ namespace ErenshorFollow
             if (destination == null)
             {
                 failure = "That is not a verified live zone exit.";
+                outcome = ExpeditionStartOutcome.NoRoute;
                 ExpeditionPhaseTelemetry.Record("command_rejected", failure);
                 return false;
             }
@@ -183,6 +218,7 @@ namespace ErenshorFollow
                 !SimTrackingRebind.AvatarMatchesTracking(stableTracking, leader))
             {
                 failure = "That leader does not have a verified persistent party identity, so the expedition cannot start safely.";
+                outcome = ExpeditionStartOutcome.InvalidLeader;
                 ExpeditionPhaseTelemetry.Record("leader_validation_failed", failure);
                 ExpeditionPhaseTelemetry.Record("command_rejected", failure);
                 return false;
@@ -191,12 +227,15 @@ namespace ErenshorFollow
                 "leader=" + SafeTelemetryName(FollowController.ReadName(leader)) + " exactTracking=true localParty=true");
 
             string legFailure;
-            if (!LeaderController.StartExpeditionLeg(leader, destination, out legFailure))
+            ExpeditionStartOutcome legOutcome;
+            if (!LeaderController.StartExpeditionLeg(leader, destination, out legFailure, out legOutcome))
             {
                 failure = string.IsNullOrWhiteSpace(legFailure) ? "The first travel leg could not start safely." : legFailure;
+                outcome = legOutcome;
                 ExpeditionPhaseTelemetry.Record("command_rejected", failure);
                 return false;
             }
+            outcome = ExpeditionStartOutcome.Accepted;
             ExpeditionPhaseTelemetry.Record("command_accepted",
                 "leader=" + SafeTelemetryName(FollowController.ReadName(leader)) +
                 " firstLeg=" + SafeTelemetryName(destination.CanonicalName));
@@ -355,7 +394,8 @@ namespace ErenshorFollow
             }
 
             string startFailure;
-            if (TryStartPrepared(leader, destination, route, ExpeditionInitiation.Command, ExpeditionObjective.Return, out startFailure))
+            ExpeditionStartOutcome unusedOutcome;
+            if (TryStartPrepared(leader, destination, route, ExpeditionInitiation.Command, ExpeditionObjective.Return, out startFailure, out unusedOutcome))
                 Emit("expedition_returning");
             else
                 Say("[Erenshor Expedition] " + startFailure, "yellow");
@@ -366,6 +406,7 @@ namespace ErenshorFollow
             if (!IsActive) return;
             _session.State = ExpeditionState.Cancelled;
             _session.FailureDetail = reason;
+            _session.RouteReadinessPending = false;
             ExpeditionPhaseTelemetry.Record("cancelled", string.IsNullOrWhiteSpace(reason) ? "no reason" : reason);
             ReleaseLeg(true);
             _terminalAt = Time.time;
@@ -378,12 +419,16 @@ namespace ErenshorFollow
             if (!IsActive) return;
             _session.State = ExpeditionState.Failed;
             _session.FailureReason = reason;
-            _session.FailureDetail = detail;
-            ExpeditionPhaseTelemetry.Record("failed", reason + ": " + (string.IsNullOrWhiteSpace(detail) ? DescribeFailure(reason) : detail));
+            // Always store a real, non-blank reason: the status surface shows this exact text, and an
+            // empty FailureDetail would silently regress to "the expedition could not continue" even
+            // though the chat line right below already carries the specific DescribeFailure() text.
+            _session.FailureDetail = string.IsNullOrWhiteSpace(detail) ? DescribeFailure(reason) : detail;
+            _session.RouteReadinessPending = false;
+            ExpeditionPhaseTelemetry.Record("failed", reason + ": " + _session.FailureDetail);
             ReleaseLeg(leaderStillValid);
             _terminalAt = Time.time;
             Emit("expedition_failed");
-            Say("[Erenshor Expedition] Expedition ended: " + (string.IsNullOrWhiteSpace(detail) ? DescribeFailure(reason) : detail), "yellow");
+            Say("[Erenshor Expedition] Expedition ended: " + _session.FailureDetail, "yellow");
         }
 
         // Called by LeaderController when something outside this class tore the leg down.
@@ -530,6 +575,7 @@ namespace ErenshorFollow
         {
             if (_session == null || _session.State == ExpeditionState.Transitioning) return;
             _session.State = ExpeditionState.Transitioning;
+            _session.RouteReadinessPending = false;
             _transitionSince = Time.time;
             _sceneSettledSince = 0f;
             ExpeditionPhaseTelemetry.Record("zone_transition_observed",
@@ -684,6 +730,9 @@ namespace ErenshorFollow
             _postZoneRouteProbeCount = 0;
             _postZoneRouteLastObservation = "not yet probed";
             _postZoneCarriedPause = carriedPause;
+            // The leader is already reacquired by the time this begins; State stays Transitioning for
+            // this whole probing window, so the UI needs its own signal to stop saying "reacquiring".
+            if (_session != null) _session.RouteReadinessPending = true;
             ExpeditionPhaseTelemetry.Record("post_zone_route_readiness",
                 "scene=" + SafeTelemetryName(_session.CurrentZone) +
                 " expectedNext=" + SafeTelemetryName(ExpectedNextZone()) +
@@ -761,12 +810,14 @@ namespace ErenshorFollow
             // the transition state, so prevent that cleanup from being misclassified as an external
             // cancellation while this bounded readiness attempt is still being evaluated.
             bool started;
+            ExpeditionStartOutcome startOutcome;
             _releasingLeg = true;
-            try { started = LeaderController.StartExpeditionLeg(leader, nextLeg, out startFailure); }
+            try { started = LeaderController.StartExpeditionLeg(leader, nextLeg, out startFailure, out startOutcome); }
             finally { _releasingLeg = false; }
             if (!started)
             {
-                _postZoneRouteLastObservation = "fresh-ready probe could not start leg: " + SafeTelemetryName(startFailure);
+                _postZoneRouteLastObservation = "fresh-ready probe could not start leg: " + SafeTelemetryName(startFailure) +
+                    " (" + startOutcome + ")";
                 ExpeditionPhaseTelemetry.Record("post_zone_route_start_rejected",
                     "attempt=" + input.AttemptCount + " reason=" + _postZoneRouteLastObservation);
                 if (input.ElapsedSeconds >= PostZoneRouteReadinessPolicy.TimeoutSeconds ||
@@ -785,6 +836,7 @@ namespace ErenshorFollow
             _session.Destination = nextLeg;
             _session.State = ExpeditionState.Traveling;
             _session.PauseReason = ExpeditionPauseReason.None;
+            _session.RouteReadinessPending = false;
             _transitionSince = 0f;
             _sceneSettledSince = 0f;
             _postZoneRouteReadinessSince = 0f;
@@ -1043,7 +1095,11 @@ namespace ErenshorFollow
                 string identity = tracking == null ? "missing" :
                     (avatar == null ? "waiting" : (SimTrackingRebind.AvatarMatchesTracking(tracking, avatar) ? "reacquired" : "MISMATCH"));
                 line += " | leader identity: " + identity + " | scene: " + ActiveScene();
+                if (_session.RouteReadinessPending) line += " | checking route to next zone...";
             }
+            if ((_session.State == ExpeditionState.Cancelled || _session.State == ExpeditionState.Failed) &&
+                !string.IsNullOrWhiteSpace(_session.FailureDetail))
+                line += " : " + _session.FailureDetail;
             if (_session.CombatInterruptions > 0) line += " | combat interruptions: " + _session.CombatInterruptions;
             return line;
         }
