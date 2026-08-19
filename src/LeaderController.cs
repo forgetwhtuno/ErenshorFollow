@@ -101,6 +101,14 @@ namespace ErenshorFollow
         private static Vector3 _movementProofTarget;
         private static int _movementOrderReissues;
         private static string _lastMovementDiagnostic = "not started";
+        // Verbose zero-candidate records can be several kilobytes once per-seed geometry is included.
+        // Route readiness may retry the same failed crossing repeatedly, so emitting the exact same
+        // forensic blob every retry creates avoidable string/IO pressure. Keep one detailed record per
+        // scene+destination at most every 10s; the short "built 0 accepted" line still reports every
+        // rebuild while Verbose is enabled.
+        private static string _lastZeroCandidateDetailKey = string.Empty;
+        private static float _lastZeroCandidateDetailAt = -999f;
+        private const float ZeroCandidateDetailRepeatSeconds = 10f;
         private static int _zoneWaypointIndex;
         private static int _crossingTraversalIndex;
         private static bool _crossingAttemptActive;
@@ -223,28 +231,34 @@ namespace ErenshorFollow
             Say(name + " tells the group: Sorry, I don't know where that is. " + DescribeShortChoices(), "lightblue");
         }
 
-        internal static bool StartExpeditionLeg(SimPlayer leader, ExpeditionDestination destination, out string failure)
+        internal static bool StartExpeditionLeg(SimPlayer leader, ExpeditionDestination destination,
+            out string failure, out ExpeditionStartOutcome outcome)
         {
             failure = null;
+            outcome = ExpeditionStartOutcome.Rejected;
             Stop(null);
             if (!FollowController.IsUsableSim(leader) || !IsGroupedWithPlayer(leader))
             {
                 failure = "The leader must be a living Sim in your current party.";
+                outcome = ExpeditionStartOutcome.InvalidLeader;
                 return false;
             }
             if (CoopCompatibility.IsRemoteHuman(leader))
             {
                 failure = "That leader is controlled by another client.";
+                outcome = ExpeditionStartOutcome.InvalidLeader;
                 return false;
             }
             if (destination == null || destination.CrossingCount == 0)
             {
                 failure = "That destination is no longer available.";
+                outcome = ExpeditionStartOutcome.NoRoute;
                 return false;
             }
             if (InCombat(leader))
             {
                 failure = "Finish combat before starting an expedition.";
+                outcome = ExpeditionStartOutcome.NotReady;
                 return false;
             }
 
@@ -263,8 +277,10 @@ namespace ErenshorFollow
                 Stop(null);
                 failure = SentenceCase(RouteCandidatePolicy.DescribeRouteFailure(
                     destination.CanonicalName, startKind, startDetail));
+                outcome = ExpeditionStartOutcome.NoRoute;
                 return false;
             }
+            outcome = ExpeditionStartOutcome.Accepted;
             return true;
         }
 
@@ -865,6 +881,25 @@ namespace ErenshorFollow
             _legHadAcceptedCandidate = ZoneRouteOptions.Count > 0;
             Verbose("built " + ZoneRouteOptions.Count + " accepted approach candidate(s) across " + liveCrossings.Count +
                 " crossing(s) for " + _expeditionDestination.CanonicalName);
+            // Bounded diagnostic for the exact "0 accepted" failure this summary line cannot explain on
+            // its own: one extra line, only on the failure branch, describing every sampled/rejected
+            // candidate the planner actually measured for this destination. See LocalZoneRoutePlanner.
+            // DescribeReadiness / RouteCandidatePolicy.DescribeCandidate for the field set.
+            if (!_legHadAcceptedCandidate && ErenshorFollowPlugin.VerboseDiagnostics)
+            {
+                string scene = SceneManager.GetActiveScene().name ?? string.Empty;
+                string destination = _expeditionDestination.CanonicalName ?? string.Empty;
+                string detailKey = scene + "|" + destination;
+                float now = Time.unscaledTime;
+                if (!string.Equals(detailKey, _lastZeroCandidateDetailKey, StringComparison.Ordinal) ||
+                    now < _lastZeroCandidateDetailAt || now - _lastZeroCandidateDetailAt >= ZeroCandidateDetailRepeatSeconds)
+                {
+                    _lastZeroCandidateDetailKey = detailKey;
+                    _lastZeroCandidateDetailAt = now;
+                    Verbose("zero-candidate detail zone=" + scene +
+                        " destination=" + destination + " " + LocalZoneRoutePlanner.DescribeReadiness(plan));
+                }
+            }
             return SelectZoneOption(0);
         }
 
@@ -1077,6 +1112,24 @@ namespace ErenshorFollow
                 return false;
             }
 
+            // The ordered point was actually reached. Clear the movement proof and return false so
+            // this tick CONTINUES into AdvanceZoneWaypointIfReached()/HandleCrossingAttempt() rather
+            // than returning early. Returning true here is what previously made the crossing phase
+            // structurally unreachable: the proof never cleared on arrival, so the tick short-
+            // circuited above the crossing handoff on every subsequent frame until the reissue
+            // budget ran out and the route failed.
+            if (decision == ExpeditionMovementDecision.ArrivedAtTarget)
+            {
+                _movementProofPending = false;
+                _lastLeaderProgressPosition = _leader.transform.position;
+                _lastLeaderProgressAt = Time.time;
+                _routeProblemSince = 0f;
+                _lastMovementDiagnostic = ExpeditionMovementPolicy.Describe(issue);
+                Verbose("native movement ownership arrival: " + _lastMovementDiagnostic + "; " +
+                    DescribeNativeMovementState(_movementProofTarget));
+                return false;
+            }
+
             string description = ExpeditionMovementPolicy.Describe(issue);
             if (decision == ExpeditionMovementDecision.ReissueNativeOrder)
             {
@@ -1118,12 +1171,18 @@ namespace ErenshorFollow
             observation.AgentPresent = nav != null;
             observation.ElapsedSeconds = Time.time - _movementProofSince;
             observation.ReissueCount = _movementOrderReissues;
+            // Unknown distance must never read as "arrived" (0). Only a real measured leader
+            // position below may lower this.
+            observation.DistanceToTarget = float.MaxValue;
 
             if (_leader != null)
             {
                 Vector3 now = _leader.transform.position;
                 observation.MovedDistance = HorizontalDistance(now, _movementProofStartPosition);
                 observation.DistanceImprovement = _movementProofStartTargetDistance - HorizontalDistance(now, target);
+                // Remaining distance to the ordered point. Without this the policy cannot tell a
+                // leader that ARRIVED from one that never moved; see ExpeditionMovementPolicy.
+                observation.DistanceToTarget = HorizontalDistance(now, target);
             }
 
             if (nav != null)
@@ -1612,6 +1671,48 @@ namespace ErenshorFollow
                 ? ZoneWaypoints[_zoneWaypointIndex] : _zoneApproach;
         }
 
+        // Emitted once per crossing handoff (and once when a handoff cannot produce a traversal
+        // target), never per frame. Carries enough real collider/seed geometry to explain a
+        // zero-accepted or far-landing approach without needing another live session.
+        private static void EmitCrossingHandoffDiagnostic(string phase, float approachDistance, float triggerDistance)
+        {
+            try
+            {
+                NavMeshAgent nav = ResolveLeaderAgent();
+                float velocity = 0f;
+                string pathStatus = "unavailable";
+                try
+                {
+                    if (nav != null && nav.enabled && nav.isOnNavMesh)
+                    {
+                        velocity = nav.velocity.magnitude;
+                        pathStatus = nav.hasPath ? nav.pathStatus.ToString() : "noPath";
+                    }
+                }
+                catch { }
+
+                string selected = _crossingTraversalIndex >= 0 && _crossingTraversalIndex < CrossingTraversalOptions.Count
+                    ? LocalZoneRoutePlanner.FormatVector(CrossingTraversalOptions[_crossingTraversalIndex].Target)
+                    : "none";
+                bool insideTrigger = triggerDistance <= 0.01f;
+
+                ExpeditionPhaseTelemetry.Record("crossing_handoff",
+                    "crossing=" + SafeName(_destinationName) +
+                    " phase=" + phase +
+                    " approach=" + LocalZoneRoutePlanner.FormatVector(_zoneApproach) +
+                    " leaderDistanceToApproach=" + approachDistance.ToString("F2") + "m" +
+                    " colliderBounds=" + LocalZoneRoutePlanner.DescribeCrossingColliders(_destination) +
+                    " traversalCandidates=" + CrossingTraversalOptions.Count +
+                    " selectedTraversalTarget=" + selected +
+                    " pathStatus=" + pathStatus +
+                    " endpointDistance=" + triggerDistance.ToString("F2") + "m" +
+                    " insideTrigger=" + insideTrigger +
+                    " agentVelocity=" + velocity.ToString("F2") +
+                    " zoneChanged=false");
+            }
+            catch { }
+        }
+
         private static bool HandleCrossingAttempt()
         {
             if (_leader == null || _destination == null || _monster != null) return false;
@@ -1641,6 +1742,9 @@ namespace ErenshorFollow
                 begin.ApproachReady = true;
                 begin.HasTraversalTarget = CrossingTraversalOptions.Count > 0;
                 ExpeditionCrossingDecision beginDecision = ExpeditionCrossingPolicy.Evaluate(begin);
+                EmitCrossingHandoffDiagnostic(
+                    beginDecision == ExpeditionCrossingDecision.Fail ? "NoTraversalTarget" : "ApproachReachedTraversalPending",
+                    approachDistance, triggerDistance);
                 if (beginDecision == ExpeditionCrossingDecision.Fail)
                 {
                     _lastCrossingDiagnostic = "no NavMesh traversal target was proven through the real trigger shape";

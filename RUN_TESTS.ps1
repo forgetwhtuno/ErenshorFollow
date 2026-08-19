@@ -43,4 +43,19 @@ if ($LASTEXITCODE -ne 0) { throw "Follow UI/Camp handoff deterministic tests fai
 & (Join-Path $root "tests\RUN_RELEASE_STATIC_TESTS.ps1")
 if ($LASTEXITCODE -ne 0) { throw "Follow release static tests failed." }
 
+# Shared right-side standalone-launcher column policy: pure geometry/slot math, no UnityEngine
+# dependency. See src/StandaloneLauncherColumnPolicy.cs.
+$columnTempDir = Join-Path ([IO.Path]::GetTempPath()) ("ErenshorFollow-column-tests-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $columnTempDir | Out-Null
+try {
+    $columnOut = Join-Path $columnTempDir "ErenshorFollow.StandaloneLauncherColumnPolicyTests.exe"
+    & $csc /nologo /target:exe /out:$columnOut `
+        (Join-Path $root "src\StandaloneLauncherColumnPolicy.cs") `
+        (Join-Path $root "tests\StandaloneLauncherColumnPolicyTests.cs")
+    if ($LASTEXITCODE -ne 0) { throw "Follow standalone launcher column policy tests did not compile." }
+    & $columnOut
+    if ($LASTEXITCODE -ne 0) { throw "Follow standalone launcher column policy tests failed." }
+}
+finally { Remove-Item -Recurse -Force $columnTempDir -ErrorAction SilentlyContinue }
+
 Write-Host "Erenshor Follow consolidated deterministic tests: ALL PASS" -ForegroundColor Green

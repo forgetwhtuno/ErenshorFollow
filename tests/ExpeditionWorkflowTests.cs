@@ -37,6 +37,44 @@ namespace ErenshorFollow
                 "unstartable route rejected");
         }
 
+        // Test #8 (duplicate Start while already active cannot create second session): AlreadyActive maps
+        // to its own outcome rather than falling through to a generic rejection or, worse, to Accepted.
+        private static void StartOutcomeMapping()
+        {
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.AlreadyActive) == ExpeditionStartOutcome.AlreadyActive,
+                "an already-active expedition is classified AlreadyActive, never re-admitted as a second session");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.MissingTracking) == ExpeditionStartOutcome.InvalidLeader,
+                "missing tracking classifies as InvalidLeader");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.IdentityMismatch) == ExpeditionStartOutcome.InvalidLeader,
+                "identity mismatch classifies as InvalidLeader");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.LeftParty) == ExpeditionStartOutcome.InvalidLeader,
+                "left party classifies as InvalidLeader");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.Unusable) == ExpeditionStartOutcome.InvalidLeader,
+                "unusable leader classifies as InvalidLeader");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.RemoteAuthority) == ExpeditionStartOutcome.InvalidLeader,
+                "remote authority classifies as InvalidLeader");
+            Assert(ExpeditionWorkflowPolicy.ToStartOutcome(ExpeditionStartAdmission.NoRoute) == ExpeditionStartOutcome.NoRoute,
+                "no route classifies as NoRoute");
+        }
+
+        // Test #9 (Cancel returns UI to idle/setup state) and the general "no silent failure" fix: a
+        // terminal session keeps the same visible surface Arrived already had instead of vanishing the
+        // instant Active flips to false, and once the session is actually gone (Idle) the surface is
+        // correctly hidden -- this is what "returns to idle" means in terms the UI layer can observe.
+        private static void TerminalVisibility()
+        {
+            Assert(ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(ExpeditionState.Traveling, true),
+                "an active expedition shows its status surface");
+            Assert(ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(ExpeditionState.Arrived, false),
+                "arrival keeps showing (pre-existing behavior)");
+            Assert(ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(ExpeditionState.Cancelled, false),
+                "cancellation is shown instead of silently vanishing (test #6/#9)");
+            Assert(ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(ExpeditionState.Failed, false),
+                "failure is shown instead of silently vanishing (test #5)");
+            Assert(!ExpeditionWorkflowPolicy.ShouldShowExpeditionSurface(ExpeditionState.Idle, false),
+                "once the session actually clears, the surface returns to idle/hidden");
+        }
+
         private static void LiveLegAuthorizationPolicy()
         {
             Assert(ExpeditionWorkflowPolicy.CanAuthorizeLiveLeg(true, true, 3),
@@ -111,6 +149,8 @@ namespace ErenshorFollow
         public static int Main()
         {
             StartAdmission();
+            StartOutcomeMapping();
+            TerminalVisibility();
             LiveLegAuthorizationPolicy();
             SetupLifecycle();
             ActiveStatusControls();

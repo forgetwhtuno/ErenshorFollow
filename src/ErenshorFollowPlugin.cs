@@ -16,7 +16,7 @@ namespace ErenshorFollow
     {
         internal const string PluginGuid = "forgetwhtuno.erenshor.follow";
         internal const string PluginName = "Erenshor Follow";
-        internal const string PluginVersion = "0.6.4";
+        internal const string PluginVersion = "0.6.15";
         internal static ErenshorFollowPlugin Instance;
         internal static bool VerboseDiagnostics { get; private set; }
 
@@ -77,13 +77,24 @@ namespace ErenshorFollow
                 SimActionMenuLayoutPolicy.UiRevision + ". Use /efollow <SimName>, /efollow status, /efollow ui, or /efollow off. /dsfollow is also accepted for compatibility.");
             Logging.LogInfo("Sim-Led Expeditions available: /expedition status|diag|pause|resume|cancel|return.");
             StandaloneFallbackUi.Initialize(this, "follow", "FOLLOW",
-                "Select a local party Sim to open Sim Actions and create a Follow or Expedition session.", 240f,
+                "Select a local party Sim to open Sim Actions and create a Follow or Expedition session.",
+                StandaloneLauncherColumnPolicy.DefaultX(),
+                StandaloneLauncherColumnPolicy.DefaultY(StandaloneLauncherColumnPolicy.SlotIndex),
                 FollowControlApi.GetStatus,
                 new FallbackAction("Stop Travel", FollowControlApi.TryStop, null),
                 new FallbackAction("Pause Expedition", FollowControlApi.TryPauseExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
                 new FallbackAction("Resume Expedition", FollowControlApi.TryResumeExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
                 new FallbackAction("Cancel Expedition", FollowControlApi.TryCancelExpedition, delegate { return FollowControlApi.GetBasicState().ExpeditionActive; }),
                 new FallbackAction("Return", FollowControlApi.TryReturn, delegate { return FollowControlApi.GetBasicState().CanReturn; }));
+            // Compact workspace tuning: Follow's guide+status is normally 2-3 short lines, so the
+            // shared 88px status box left a large empty area beneath it. 56px keeps room for a
+            // longer transient status line (e.g. an expedition rejection reason) while removing
+            // most of that unused space. Default panel position sits in the shared right-side
+            // workspace below the launcher column instead of dead screen center.
+            StandaloneFallbackUi.ConfigureWorkspaceDefaults(56f,
+                StandaloneLauncherColumnPolicy.DefaultPanelRightNormalized(),
+                StandaloneLauncherColumnPolicy.DefaultPanelTopNormalized(),
+                StandaloneLauncherColumnPolicy.SlotIndex);
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -229,6 +240,11 @@ namespace ErenshorFollow
 
         internal void LogDebug(string message)
         {
+            // Central fail-closed gate: older helpers named Verbose() were not consistently checking
+            // the Diagnostics setting themselves, so route/player-follow debug lines could still hit
+            // Lunaris synchronously during normal play. Explicit diagnostics still surface their
+            // player-facing Chat output; forensic file/log detail requires Diagnostics/Verbose.
+            if (!VerboseDiagnostics) return;
             Logging.LogDebug(message);
         }
 

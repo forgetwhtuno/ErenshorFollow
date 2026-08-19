@@ -46,6 +46,22 @@ namespace ErenshorFollow
         InternalError
     }
 
+    // Explicit result of a Start attempt so UI can react to a typed outcome instead of inferring
+    // success from "the button was clicked" or from parsing a human-readable string. There is no
+    // PendingRoute member here: the Start call chain (ExpeditionCoordinator/LeaderController) is
+    // synchronous and always resolves to one of these values within the same frame. The genuine
+    // multi-frame asynchronous phase is post-zone route readiness after an in-progress expedition
+    // crosses a zone, which is exposed separately via ExpeditionSession.RouteReadinessPending.
+    internal enum ExpeditionStartOutcome
+    {
+        Accepted,
+        AlreadyActive,
+        InvalidLeader,
+        NoRoute,
+        NotReady,
+        Rejected
+    }
+
     // v1 recognizes exactly one destination kind. The enum exists so a later landmark/POI kind cannot
     // be introduced by accident through an untyped string.
     internal enum ExpeditionDestinationKind { AdjacentZone }
@@ -102,6 +118,12 @@ namespace ErenshorFollow
         internal ExpeditionFailureReason FailureReason;
         internal string FailureDetail;
         internal int CombatInterruptions;
+        // True only while a completed zone transition is waiting on a fresh, bounded post-zone
+        // route/NavMesh readiness probe for the next leg (see ExpeditionCoordinator.
+        // BeginPostZoneRouteReadiness/TickPostZoneRouteReadiness). State stays Transitioning during
+        // this window; this flag lets the UI say "checking route" instead of a stale "reacquiring
+        // leader" once the leader has already been reacquired.
+        internal bool RouteReadinessPending;
         internal readonly List<string> VerifiedZonesCrossed = new List<string>();
         internal ExpeditionInitiation InitiationSource;
 
@@ -138,10 +160,12 @@ namespace ErenshorFollow
         internal readonly int RemainingTransitions;
         internal readonly ExpeditionPauseReason PauseReason;
         internal readonly int CombatInterruptions;
+        internal readonly bool RouteReadinessPending;
+        internal readonly string FailureDetail;
 
         internal ExpeditionStatusSnapshot(int sessionId, bool active, ExpeditionState state, ExpeditionObjective objective,
             string leaderName, string destinationName, string currentZone, string nextZone, int remainingTransitions,
-            ExpeditionPauseReason pauseReason, int combatInterruptions)
+            ExpeditionPauseReason pauseReason, int combatInterruptions, bool routeReadinessPending, string failureDetail)
         {
             SessionId = sessionId;
             Active = active;
@@ -154,6 +178,8 @@ namespace ErenshorFollow
             RemainingTransitions = Math.Max(0, remainingTransitions);
             PauseReason = pauseReason;
             CombatInterruptions = combatInterruptions;
+            RouteReadinessPending = routeReadinessPending;
+            FailureDetail = failureDetail;
         }
     }
 }

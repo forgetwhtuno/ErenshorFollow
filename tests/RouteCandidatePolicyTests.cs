@@ -29,6 +29,9 @@ internal static class RouteCandidatePolicyTests
         Run("crossing transition failure distinguishes trigger handoff from route approach", CrossingTransitionFailureWording);
         Run("no accepted route overrides any site classification", NoAcceptedRouteOverridesSiteKind);
         Run("an unclassified site with an accepted route degrades to travel execution", UnclassifiedSiteDegrades);
+        Run("candidate diagnostic reports every measured distance, not only the verdict", CandidateDiagnosticReportsDistances);
+        Run("candidate diagnostic distinguishes a far-approach rejection from a no-evidence rejection", CandidateDiagnosticDistinguishesRejectionCauses);
+        Run("candidate diagnostic never emits an empty reason", CandidateDiagnosticHandlesMissingReason);
         Console.WriteLine("PASS: " + _passed + " route-candidate policy tests.");
         return 0;
     }
@@ -143,6 +146,57 @@ internal static class RouteCandidatePolicyTests
         RouteCandidatePolicy.Evaluation evaluation = RouteCandidatePolicy.Evaluate(candidate);
         Require(evaluation.Accepted && evaluation.Acceptance == RouteCandidatePolicy.AcceptanceKind.Complete,
             "a Complete path ending 5.3m from the crossing must be accepted");
+    }
+
+    // 0.6.5 live repro: Duskenlight Cove produced "built 0 accepted approach candidate(s) across 1
+    // crossing(s) for Hidden" with no further detail, while the same session's Brake crossing worked.
+    // The pre-existing terse summary line could not distinguish "no NavMesh sample near the crossing"
+    // from "sampled fine but every candidate failed the acceptance distances" -- these three tests lock
+    // in that the new DescribeCandidate diagnostic (wired into the live failure path in
+    // LeaderController.RebuildZoneOptions via LocalZoneRoutePlanner.DescribeReadiness) actually reports
+    // the distances and reasons needed to tell those causes apart on the next live attempt.
+    private static void CandidateDiagnosticReportsDistances()
+    {
+        RouteCandidatePolicy.Candidate candidate = Candidate("hidden-approach", true, RouteCandidatePolicy.PathKind.Complete,
+            6, 42f, 0f, 41.9f, 45f);
+        RouteCandidatePolicy.Evaluation evaluation = RouteCandidatePolicy.Evaluate(candidate);
+        string description = RouteCandidatePolicy.DescribeCandidate(candidate, evaluation);
+        Require(description.IndexOf("startDist=42.00", StringComparison.Ordinal) >= 0, description);
+        Require(description.IndexOf("endpointDist=0.00", StringComparison.Ordinal) >= 0, description);
+        Require(description.IndexOf("approachDist=41.90", StringComparison.Ordinal) >= 0, description);
+        Require(description.IndexOf("result=Rejected", StringComparison.Ordinal) >= 0, description);
+        Require(description.IndexOf("too far", StringComparison.OrdinalIgnoreCase) >= 0, description);
+    }
+
+    private static void CandidateDiagnosticDistinguishesRejectionCauses()
+    {
+        // Sampled fine and geometrically close-ish, but the complete path's actual endpoint lands
+        // far from the real crossing -- same class as the historical Faerie's Brake -> Azure case.
+        RouteCandidatePolicy.Candidate farApproach = Candidate("far-approach", true, RouteCandidatePolicy.PathKind.Complete,
+            6, 42f, 0f, 41.9f, 45f);
+        // Sampled, but no walkable path evidence at all (Invalid) and the raw sample point itself is
+        // beyond even the lenient native-proof fallback radius -- this is the "off-mesh crossing" shape.
+        RouteCandidatePolicy.Candidate offMesh = Candidate("off-mesh", true, RouteCandidatePolicy.PathKind.Invalid,
+            0, 15f, 15f, 15f, float.MaxValue);
+
+        string farDescription = RouteCandidatePolicy.DescribeCandidate(farApproach, RouteCandidatePolicy.Evaluate(farApproach));
+        string offMeshDescription = RouteCandidatePolicy.DescribeCandidate(offMesh, RouteCandidatePolicy.Evaluate(offMesh));
+
+        Require(farDescription.IndexOf("too far", StringComparison.OrdinalIgnoreCase) >= 0, farDescription);
+        Require(offMeshDescription.IndexOf("no useful local route evidence", StringComparison.OrdinalIgnoreCase) >= 0, offMeshDescription);
+        Require(!string.Equals(farDescription, offMeshDescription, StringComparison.Ordinal),
+            "two different rejection causes must not produce identical diagnostic text");
+    }
+
+    private static void CandidateDiagnosticHandlesMissingReason()
+    {
+        Require(RouteCandidatePolicy.DescribeCandidate(null, null) == "candidate=missing",
+            "a missing candidate must still produce a safe, non-empty diagnostic line");
+        RouteCandidatePolicy.Candidate candidate = Candidate("unevaluated", true, RouteCandidatePolicy.PathKind.Invalid,
+            0, 5f, 5f, 5f, 999f);
+        string description = RouteCandidatePolicy.DescribeCandidate(candidate, null);
+        Require(description.IndexOf("result=unevaluated", StringComparison.Ordinal) >= 0, description);
+        Require(description.IndexOf("reason=no evaluation", StringComparison.Ordinal) >= 0, description);
     }
 
     private static void RouteFailureMessageNoCandidates()
