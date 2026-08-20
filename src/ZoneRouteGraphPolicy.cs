@@ -32,25 +32,24 @@ namespace ErenshorFollow
             route = new List<string>();
             ambiguous = false;
             failure = null;
-            if (graph == null || graph.Count == 0)
-            {
-                failure = "The game's zone atlas is unavailable.";
-                return false;
-            }
             if (string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(requested))
             {
                 failure = "An origin and destination are required.";
                 return false;
             }
 
-            string start = ResolveName(graph, origin, out ambiguous);
+            // The authored atlas is historical relationship data, not an exhaustive authority for the
+            // currently loaded scene. A usable live Zoneline is direct executable evidence for THIS
+            // origin only, so overlay it before resolving/searching while keeping future hops authored.
+            Dictionary<string, List<string>> runtime = BuildRuntimeGraph(graph, origin, allowedFirstHops);
+            string start = ResolveName(runtime, origin, out ambiguous);
             if (start == null)
             {
                 failure = ambiguous ? "More than one world zone matches the current zone." :
                     "The current zone is not present in the game's zone atlas.";
                 return false;
             }
-            string goal = ResolveName(graph, requested, out ambiguous);
+            string goal = ResolveName(runtime, requested, out ambiguous);
             if (goal == null)
             {
                 failure = ambiguous ? "More than one world zone matches that destination." :
@@ -68,7 +67,7 @@ namespace ErenshorFollow
             // authored links into an undirected traversal graph. This never authorizes a crossing: the
             // first hop is still constrained by the caller's live Zoneline set, and every later leg is
             // re-authorized from the newly loaded scene before movement starts.
-            Dictionary<string, List<string>> traversal = BuildTraversalGraph(graph);
+            Dictionary<string, List<string>> traversal = BuildTraversalGraph(runtime);
 
             Queue<string> open = new Queue<string>();
             Dictionary<string, string> previous = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -82,7 +81,7 @@ namespace ErenshorFollow
                 if (!traversal.TryGetValue(current, out neighbors) || neighbors == null) continue;
                 for (int i = 0; i < neighbors.Count; i++)
                 {
-                    string neighbor = Canonical(graph, neighbors[i]);
+                    string neighbor = Canonical(runtime, neighbors[i]);
                     if (neighbor == null) continue;
                     if (current.Equals(start, StringComparison.OrdinalIgnoreCase) &&
                         allowedFirstHops != null && !ContainsName(allowedFirstHops, neighbor)) continue;
@@ -105,13 +104,15 @@ namespace ErenshorFollow
             string origin, IList<string> allowedFirstHops)
         {
             List<ExpeditionRouteChoice> choices = new List<ExpeditionRouteChoice>();
-            if (graph == null || graph.Count == 0 || string.IsNullOrWhiteSpace(origin)) return choices;
+            if (string.IsNullOrWhiteSpace(origin)) return choices;
+
+            Dictionary<string, List<string>> runtime = BuildRuntimeGraph(graph, origin, allowedFirstHops);
 
             bool originAmbiguous;
-            string start = ResolveName(graph, origin, out originAmbiguous);
+            string start = ResolveName(runtime, origin, out originAmbiguous);
             if (start == null || originAmbiguous) return choices;
 
-            List<string> destinations = new List<string>(graph.Keys);
+            List<string> destinations = new List<string>(runtime.Keys);
             destinations.Sort(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < destinations.Count; i++)
             {
@@ -120,7 +121,7 @@ namespace ErenshorFollow
                 List<string> route;
                 bool ambiguous;
                 string failure;
-                if (!TryBuild(graph, start, destination, allowedFirstHops, out route, out ambiguous, out failure)) continue;
+                if (!TryBuild(runtime, start, destination, allowedFirstHops, out route, out ambiguous, out failure)) continue;
                 if (route.Count < 2) continue;
                 choices.Add(new ExpeditionRouteChoice(destination, route));
             }
@@ -163,6 +164,59 @@ namespace ErenshorFollow
             foreach (List<string> neighbors in traversal.Values)
                 neighbors.Sort(StringComparer.OrdinalIgnoreCase);
             return traversal;
+        }
+
+        // Runtime graph = normalized authored graph plus the current scene's already-filtered live
+        // outgoing Zonelines. The overlay never invents a future-scene edge and never makes POI/egress
+        // metadata a prerequisite for world adjacency.
+        internal static Dictionary<string, List<string>> BuildRuntimeGraph(Dictionary<string, List<string>> authored,
+            string origin, IList<string> liveCurrentSceneEdges)
+        {
+            Dictionary<string, List<string>> runtime = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            if (authored != null)
+            {
+                foreach (KeyValuePair<string, List<string>> pair in authored)
+                {
+                    if (string.IsNullOrWhiteSpace(pair.Key)) continue;
+                    string key = pair.Key.Trim();
+                    if (!runtime.ContainsKey(key)) runtime.Add(key, new List<string>());
+                }
+                foreach (KeyValuePair<string, List<string>> pair in authored)
+                {
+                    string from = Canonical(runtime, pair.Key);
+                    if (from == null || pair.Value == null) continue;
+                    for (int i = 0; i < pair.Value.Count; i++)
+                    {
+                        string to = Canonical(runtime, pair.Value[i]);
+                        if (to == null || from.Equals(to, StringComparison.OrdinalIgnoreCase)) continue;
+                        AddUnique(runtime[from], to);
+                    }
+                }
+            }
+
+            string start = Canonical(runtime, origin);
+            if (start == null && !string.IsNullOrWhiteSpace(origin))
+            {
+                start = origin.Trim();
+                if (!runtime.ContainsKey(start)) runtime.Add(start, new List<string>());
+            }
+            if (start == null || liveCurrentSceneEdges == null) return runtime;
+
+            for (int i = 0; i < liveCurrentSceneEdges.Count; i++)
+            {
+                string raw = liveCurrentSceneEdges[i];
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                string edge = Canonical(runtime, raw);
+                if (edge == null)
+                {
+                    edge = raw.Trim();
+                    if (!runtime.ContainsKey(edge)) runtime.Add(edge, new List<string>());
+                }
+                if (start.Equals(edge, StringComparison.OrdinalIgnoreCase)) continue;
+                AddUnique(runtime[start], edge);
+            }
+            foreach (List<string> neighbors in runtime.Values) neighbors.Sort(StringComparer.OrdinalIgnoreCase);
+            return runtime;
         }
 
         private static void AddUnique(List<string> values, string value)

@@ -132,7 +132,19 @@ Invoke-StandaloneSuite "PostZoneRouteReadinessPolicyTests" @(
 
 Invoke-StandaloneSuite "CrossingSeedGeometryPolicyTests" @(
     (Join-Path $repoRoot "src\CrossingSeedGeometryPolicy.cs"),
+    (Join-Path $repoRoot "src\CrossingSeedBudgetPolicy.cs"),
+    (Join-Path $repoRoot "src\RouteCandidatePolicy.cs"),
     (Join-Path $scriptRoot "CrossingSeedGeometryPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "EgressAssociationPolicyTests" @(
+    (Join-Path $repoRoot "src\EgressAssociationPolicy.cs"),
+    (Join-Path $scriptRoot "EgressAssociationPolicyTests.cs")
+) $csc
+
+Invoke-StandaloneSuite "ExpeditionOrderProofPolicyTests" @(
+    (Join-Path $repoRoot "src\ExpeditionOrderProofPolicy.cs"),
+    (Join-Path $scriptRoot "ExpeditionOrderProofPolicyTests.cs")
 ) $csc
 
 Invoke-StandaloneSuite "StandaloneLauncherColumnPolicyTests" @(

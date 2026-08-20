@@ -111,6 +111,36 @@ namespace ErenshorFollow
             Assert(Math.Abs(Math.Abs(leftX) - 2f) < 0.001f && Math.Abs(Math.Abs(rightX) - 2f) < 0.001f,
                 "side-step candidates are offset by the full radius laterally");
             Assert(Math.Sign(leftX) != Math.Sign(rightX), "left and right side-step candidates are on opposite sides");
+            Assert(leftX < 0f && rightX > 0f, "Unity +Z handedness labels -X as left and +X as right");
+        }
+
+        private static void SidestepSelectionUsesBothCandidates()
+        {
+            FollowSidestepCandidate left = new FollowSidestepCandidate
+            {
+                Sampled = true, PathValid = true, ContinuationValid = true,
+                Progress = 1f, CombinedRouteLength = 12f, TieBreakX = -2f, TieBreakZ = 0f
+            };
+            FollowSidestepCandidate right = new FollowSidestepCandidate
+            {
+                Sampled = true, PathValid = true, ContinuationValid = true,
+                Progress = 3f, CombinedRouteLength = 8f, TieBreakX = 2f, TieBreakZ = 0f
+            };
+            Assert(FollowLocalObstaclePolicy.ChooseSidestep(left, right) == FollowSidestepChoice.Right,
+                "both usable sides select the objectively better continuation, not the first candidate");
+            Assert(FollowLocalObstaclePolicy.ChooseSidestep(right, left) == FollowSidestepChoice.Left,
+                "candidate enumeration order alone cannot force the chosen direction");
+
+            left.PathValid = false;
+            Assert(FollowLocalObstaclePolicy.ChooseSidestep(left, right) == FollowSidestepChoice.Right,
+                "right-only usable chooses right");
+            right.PathValid = false;
+            left.PathValid = true;
+            Assert(FollowLocalObstaclePolicy.ChooseSidestep(left, right) == FollowSidestepChoice.Left,
+                "left-only usable chooses left");
+            left.PathValid = false;
+            Assert(FollowLocalObstaclePolicy.ChooseSidestep(left, right) == FollowSidestepChoice.None,
+                "neither usable falls back to existing bounded ordinary recovery");
         }
 
         // ---------------------------------------------------------------------------------------------
@@ -204,6 +234,7 @@ namespace ErenshorFollow
             TemporaryStallClassificationDoesNotFailImmediately();
             LeaderTooFarAndNoRouteAreDistinctFromBlocked();
             SidestepCandidatesAreLateralNotForwardOrBackward();
+            SidestepSelectionUsesBothCandidates();
             CloseDistanceUsesNormalSpeed();
             DesiredBandIsStableTrailingAtNormalSpeed();
             ModerateAndStrongSeparationEngageCatchUp();

@@ -41,19 +41,52 @@ namespace ErenshorFollow
             int authoredLinks = 0;
             foreach (List<string> links in graph.Values) if (links != null) authoredLinks += links.Count;
             Dictionary<string, List<string>> traversal = ZoneRouteGraphPolicy.BuildTraversalGraph(graph);
+            Dictionary<string, List<string>> runtime = ZoneRouteGraphPolicy.BuildRuntimeGraph(graph, origin, liveFirstHops);
             int normalizedLinks = 0;
             foreach (List<string> links in traversal.Values) if (links != null) normalizedLinks += links.Count;
             List<ExpeditionRouteChoice> reachable = ZoneRouteGraphPolicy.ListReachable(graph, origin, liveFirstHops);
             List<string> names = new List<string>();
             for (int i = 0; i < reachable.Count && i < 8; i++)
                 names.Add(reachable[i].DestinationName + (reachable[i].Nearby ? "(near)" : "(" + reachable[i].TransitionCount + " hops)"));
-            return "[Erenshor Expedition] atlas: origin=" + Safe(origin) +
+            string text = "[Expedition route reconcile] scene=" + Safe(origin) +
                 " nodes=" + graph.Count +
                 " authoredLinks=" + authoredLinks +
                 " normalizedEdges=" + (normalizedLinks / 2) +
                 " liveFirstHops=" + Join(liveFirstHops) +
+                " runtimeOutgoing=" + Join(Outgoing(runtime, origin)) +
                 " reachable=" + reachable.Count +
                 (names.Count == 0 ? string.Empty : " | " + string.Join(", ", names.ToArray()));
+            if (liveFirstHops != null)
+            {
+                for (int i = 0; i < liveFirstHops.Count; i++)
+                {
+                    string hop = liveFirstHops[i];
+                    if (string.IsNullOrWhiteSpace(hop)) continue;
+                    bool authored = ContainsName(Outgoing(graph, origin), hop);
+                    bool normalized = ContainsName(Outgoing(traversal, origin), hop);
+                    bool runtimeEdge = ContainsName(Outgoing(runtime, origin), hop);
+                    List<string> directRoute;
+                    bool ambiguous;
+                    string failure;
+                    bool reachableDirect = TryBuild(origin, hop, liveFirstHops, out directRoute, out ambiguous, out failure) && directRoute.Count == 2;
+                    text += " | liveHop=" + Safe(hop) + " canonical=" + Safe(Canonical(runtime, hop)) +
+                        " liveCrossings=" + ExpeditionDestinationResolver.GetCrossings(hop, false).Count +
+                        " authoredEdge=" + authored + " normalizedEdge=" + normalized +
+                        " runtimeEdge=" + runtimeEdge + " reachable=" + reachableDirect +
+                        " direct=" + reachableDirect + " selected=unavailable egressPOIs=optional eligibility=" +
+                        (runtimeEdge ? "eligible" : "live_crossing_ineligible");
+                }
+            }
+            return text;
+        }
+
+        private static List<string> Outgoing(Dictionary<string, List<string>> graph, string origin)
+        {
+            List<string> empty = new List<string>();
+            string canonical = Canonical(graph, origin);
+            if (canonical == null || graph == null) return empty;
+            List<string> edges;
+            return graph.TryGetValue(canonical, out edges) && edges != null ? edges : empty;
         }
 
         private static string Join(IList<string> values)

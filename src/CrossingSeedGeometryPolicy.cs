@@ -159,6 +159,127 @@ namespace ErenshorFollow
             };
         }
 
+        // ---- 0.6.18 route-facing entrance sampling repair --------------------------------------
+        //
+        // Live 0.6.17 evidence, crossing vitheo|zoneline (1), rawPos=(269.946, 28.200, 54.790):
+        // generatedSeeds=22, filteredSeeds=0, samples=1, accepted=1. The single sampled/accepted
+        // candidate was seed=face1 (the oriented -X face centre) at approach=(229.95, 28.53, 54.79),
+        // qualityDist=40.31 against qualityRef=routeFaceZ+. Ranking had literally nothing to choose
+        // between, so the extreme face won by default and the party walked 40m the wrong way.
+        //
+        // The 0.6.17 second stage was supposed to prevent exactly that, and it did run - but it could
+        // only ever produce three points, all at the box's CENTRE height (local Y offset 0) and all at
+        // a single inward depth of 0.55 with +/-0.22 tangents. Two independent facts make that set
+        // unable to help on this shape class:
+        //
+        //  * Centre height is the one vertical level the whole 0.6.13/0.6.14 evidence line already
+        //    proved unreliable on a tall trigger: the walkable surface sits well below the box centre,
+        //    so a bounded SamplePosition sphere at centre Y finds nothing. Every other interior probe
+        //    in this file deliberately uses the lower-intermediate level; the entrance band did not.
+        //  * One depth and one tangent step is not coverage of a face that is tens of metres wide. If
+        //    the mathematically ideal face point happens to be off-mesh, there is no second chance.
+        //
+        // RouteFacingEntranceProbes replaces that with a small, bounded, geometry-derived set across
+        // the SAME face the quality reference is measured from (see SelectRouteFacingAxis - the two
+        // must agree, or a second-stage probe cannot improve the quality metric by construction):
+        // two inward depths, three tangent steps (five only when the face is genuinely enormous), and
+        // the lower-intermediate vertical level in addition to centre only when the trigger is tall
+        // enough for the two to differ. It is still a handful of points on one face, never a grid,
+        // never a flood fill, and never a widened search radius. Every point must still pass
+        // NavMesh.SamplePosition, then CalculatePath, then the unchanged acceptance and ranking rules.
+        internal enum RouteFaceAxis { XPositive, XNegative, ZPositive, ZNegative }
+
+        // One bounded route-facing probe: a normalized local-space offset in [-1,+1] on each axis,
+        // plus the components that make it identifiable in the live diagnostic.
+        internal struct EntranceProbe
+        {
+            internal Point3 Offset;
+            internal float Depth;
+            internal float Tangent;
+            internal float Level;
+            internal EntranceProbe(Point3 offset, float depth, float tangent, float level)
+            {
+                Offset = offset;
+                Depth = depth;
+                Tangent = tangent;
+                Level = level;
+            }
+        }
+
+        // Which horizontal face of the oriented box the route start actually approaches, decided in
+        // the box's own local space by NORMALIZED distance so a long/thin or non-uniformly scaled
+        // trigger does not pick an axis merely because that axis is larger. Shared by the approach
+        // quality reference and by the entrance probes so both always name the same face.
+        internal static RouteFaceAxis SelectRouteFacingAxis(Point3 localStartRelative, Point3 halfExtents)
+        {
+            float hx = Math.Max(0.0001f, Math.Abs(halfExtents.X));
+            float hz = Math.Max(0.0001f, Math.Abs(halfExtents.Z));
+            float nx = Math.Abs(localStartRelative.X) / hx;
+            float nz = Math.Abs(localStartRelative.Z) / hz;
+            if (nx >= nz) return localStartRelative.X < 0f ? RouteFaceAxis.XNegative : RouteFaceAxis.XPositive;
+            return localStartRelative.Z < 0f ? RouteFaceAxis.ZNegative : RouteFaceAxis.ZPositive;
+        }
+
+        internal static string RouteFaceLabel(RouteFaceAxis axis)
+        {
+            switch (axis)
+            {
+                case RouteFaceAxis.XPositive: return "routeFaceX+";
+                case RouteFaceAxis.XNegative: return "routeFaceX-";
+                case RouteFaceAxis.ZPositive: return "routeFaceZ+";
+                default: return "routeFaceZ-";
+            }
+        }
+
+        // True when a face is wide enough that three tangent samples leave gaps a bounded sample
+        // sphere cannot bridge. Deliberately conservative: only a genuinely enormous face (half-width
+        // beyond eight sample radii) earns the two extra half-tangent probes.
+        internal static bool FaceNeedsWideTangentCoverage(float faceTangentWorldHalf, float sampleRadius)
+        {
+            return Math.Abs(faceTangentWorldHalf) > Math.Max(0f, sampleRadius) * 8f;
+        }
+
+        // Hard ceiling on the second-stage probe set. This runs at most once per crossing per route
+        // build, and only when the first pass produced a lone quality-poor candidate on a large
+        // trigger, so the cost is bounded twice over.
+        internal const int MaxRouteFacingEntranceProbes = 16;
+
+        // Bounded route-facing entrance probes as normalized local offsets, ordered most-likely-first:
+        // the lower-intermediate level before centre when the trigger is tall (that is the level the
+        // live evidence supports), the near-face depth before the interior depth, and the face centre
+        // tangent before its offsets.
+        internal static EntranceProbe[] RouteFacingEntranceProbes(Point3 localStartRelative, Point3 halfExtents,
+            float faceTangentWorldHalf, float verticalWorldHalf, float sampleRadius)
+        {
+            RouteFaceAxis axis = SelectRouteFacingAxis(localStartRelative, halfExtents);
+            bool alongX = axis == RouteFaceAxis.XPositive || axis == RouteFaceAxis.XNegative;
+            float sign = (axis == RouteFaceAxis.XNegative || axis == RouteFaceAxis.ZNegative) ? -1f : 1f;
+
+            float[] depths = { 0.92f, 0.55f };
+            float[] tangents = FaceNeedsWideTangentCoverage(faceTangentWorldHalf, sampleRadius)
+                ? new[] { 0f, 0.25f, -0.25f, 0.5f, -0.5f }
+                : new[] { 0f, 0.25f, -0.25f };
+            float[] levels = IntermediateVerticalLayersMeaningfullyDifferFromCenter(
+                new Point3(0f, verticalWorldHalf, 0f), sampleRadius)
+                ? new[] { -0.5f, 0f }
+                : new[] { 0f };
+
+            System.Collections.Generic.List<EntranceProbe> result =
+                new System.Collections.Generic.List<EntranceProbe>(MaxRouteFacingEntranceProbes);
+            for (int l = 0; l < levels.Length; l++)
+                for (int d = 0; d < depths.Length; d++)
+                    for (int t = 0; t < tangents.Length; t++)
+                    {
+                        if (result.Count >= MaxRouteFacingEntranceProbes) return result.ToArray();
+                        float normal = sign * depths[d];
+                        Point3 offset = alongX
+                            ? new Point3(normal, levels[l], tangents[t])
+                            : new Point3(tangents[t], levels[l], normal);
+                        result.Add(new EntranceProbe(offset, depths[d], tangents[t], levels[l]));
+                    }
+            return result.ToArray();
+        }
+
         // ---- Hidden -> Duskenlight: oriented geometry and vertical probing -----------------------
         //
         // Live evidence for crossing duskenlight|zoneline (1), rawPos=(282.93, 18.27, -158.88):

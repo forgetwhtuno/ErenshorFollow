@@ -272,6 +272,7 @@ namespace ErenshorFollow
             }
         }
 
+
         private static bool LeaderMatches(SimPlayerTracking tracking, SimPlayer avatar)
         {
             if (tracking == null || avatar == null) return false;
@@ -495,7 +496,8 @@ namespace ErenshorFollow
                     "Estimated: " + transitions + " zone transition" + (transitions == 1 ? string.Empty : "s");
             }
             if (_startButton != null)
-                _startButton.interactable = _selectedRoute.Count >= 2 && LeaderMatches(_leaderTracking, SimTrackingRebind.CurrentAvatar(_leaderTracking));
+                _startButton.interactable = _selectedRoute.Count >= 2 &&
+                    LeaderMatches(_leaderTracking, SimTrackingRebind.CurrentAvatar(_leaderTracking));
         }
 
         private static void SetMessage(string value, bool warning)

@@ -45,6 +45,20 @@ namespace ErenshorFollow
             internal float EndpointDistanceToCrossing;
             internal float ApproachDistanceToCrossing;
             internal float RouteLength;
+            internal bool HasApproachQuality;
+            internal float ApproachQualityDistance;
+            internal string ApproachQualityReferenceLabel = string.Empty;
+            internal string ApproachQualityReferencePosition = string.Empty;
+            // Centering is a ranking signal for approaches to the SAME crossing. It is deliberately
+            // separate from acceptance: an offset Complete/Partial route remains usable when the
+            // centered probe is invalid or absent.
+            internal bool HasLateralCentering;
+            internal string CenteringGroup = string.Empty;
+            internal string FaceLabel = string.Empty;
+            internal string FaceCenterPosition = string.Empty;
+            internal string FaceTangent = string.Empty;
+            internal float LateralOffset;
+            internal string SeedLabel = string.Empty;
         }
 
         internal sealed class Evaluation
@@ -150,6 +164,7 @@ namespace ErenshorFollow
             return new Evaluation(candidate, AcceptanceKind.Rejected, "no useful local route evidence");
         }
 
+
         // Bounded, single-line description of one candidate's measured geometry and verdict. Used by the
         // live per-crossing diagnostic (LocalZoneRoutePlanner.DescribeReadiness) so a route-start failure
         // can show WHY each sampled approach was rejected -- not just that zero were accepted -- without
@@ -162,9 +177,23 @@ namespace ErenshorFollow
             string result = evaluation == null ? "unevaluated" : evaluation.Acceptance.ToString();
             string reason = evaluation == null ? "no evaluation" : evaluation.Reason;
             return key + " sampled=" + candidate.Sampled + " path=" + candidate.Path + " corners=" + candidate.CornerCount +
+                " seed=" + (string.IsNullOrWhiteSpace(candidate.SeedLabel) ? "unknown" : candidate.SeedLabel) +
                 " startDist=" + candidate.StartDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
                 " endpointDist=" + candidate.EndpointDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
                 " approachDist=" + candidate.ApproachDistanceToCrossing.ToString("F2", CultureInfo.InvariantCulture) +
+                " routeLength=" + SafeMetric(candidate.RouteLength).ToString("F2", CultureInfo.InvariantCulture) +
+                " qualityDist=" + (candidate.HasApproachQuality
+                    ? candidate.ApproachQualityDistance.ToString("F2", CultureInfo.InvariantCulture) : "n/a") +
+                " qualityRef=" + (candidate.HasApproachQuality && !string.IsNullOrWhiteSpace(candidate.ApproachQualityReferenceLabel)
+                    ? candidate.ApproachQualityReferenceLabel : "n/a") +
+                " face=" + (candidate.HasLateralCentering && !string.IsNullOrWhiteSpace(candidate.FaceLabel)
+                    ? candidate.FaceLabel : "n/a") +
+                " faceCenter=" + (candidate.HasLateralCentering && !string.IsNullOrWhiteSpace(candidate.FaceCenterPosition)
+                    ? candidate.FaceCenterPosition : "n/a") +
+                " lateralOffset=" + (candidate.HasLateralCentering
+                    ? candidate.LateralOffset.ToString("F2", CultureInfo.InvariantCulture) : "n/a") +
+                " centerRank=" + (candidate.HasLateralCentering
+                    ? candidate.LateralOffset.ToString("F2", CultureInfo.InvariantCulture) : "n/a") +
                 " result=" + result + " reason=" + (string.IsNullOrWhiteSpace(reason) ? "none" : reason);
         }
 
@@ -192,6 +221,22 @@ namespace ErenshorFollow
 
             Candidate ac = a.Candidate;
             Candidate bc = b.Candidate;
+            // Centerline ranking is meaningful only for two approaches to the same native
+            // crossing. Never let a centered approach at one destination outrank a safer/shorter
+            // approach at another destination merely because their face labels happen to match.
+            if (ac != null && bc != null && ac.HasLateralCentering && bc.HasLateralCentering &&
+                !string.IsNullOrWhiteSpace(ac.CenteringGroup) && ac.CenteringGroup == bc.CenteringGroup)
+            {
+                int lateral = SafeMetric(ac.LateralOffset).CompareTo(SafeMetric(bc.LateralOffset));
+                if (lateral != 0) return lateral;
+            }
+            if (ac != null && bc != null && (ac.HasApproachQuality || bc.HasApproachQuality))
+            {
+                float aq = ac.HasApproachQuality ? ac.ApproachQualityDistance : float.MaxValue;
+                float bq = bc.HasApproachQuality ? bc.ApproachQualityDistance : float.MaxValue;
+                int quality = SafeMetric(aq).CompareTo(SafeMetric(bq));
+                if (quality != 0) return quality;
+            }
             int route = SafeMetric(ac == null ? float.MaxValue : ac.RouteLength)
                 .CompareTo(SafeMetric(bc == null ? float.MaxValue : bc.RouteLength));
             if (route != 0) return route;
@@ -206,6 +251,13 @@ namespace ErenshorFollow
 
             return string.Compare(ac == null ? string.Empty : ac.StableKey,
                 bc == null ? string.Empty : bc.StableKey, StringComparison.Ordinal);
+        }
+
+        internal static bool ShouldProbeRouteFacingEntrance(Evaluation best, float largestFootprint)
+        {
+            if (best == null || !best.Accepted || best.Candidate == null) return false;
+            if (!best.Candidate.HasApproachQuality || largestFootprint < 12f) return false;
+            return best.Candidate.ApproachQualityDistance > Math.Max(8f, largestFootprint * 0.35f);
         }
 
         internal static float RequiredPartialProgress(float startDistanceToCrossing)

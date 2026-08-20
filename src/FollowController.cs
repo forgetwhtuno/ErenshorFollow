@@ -83,6 +83,7 @@ namespace ErenshorFollow
         // logic is untouched; these only feed the classification of WHY a repath is needed and the
         // trailing-target/side-step computation.
         private static readonly NavMeshPath SidestepPath = new NavMeshPath();
+        private static readonly NavMeshPath SidestepContinuationPath = new NavMeshPath();
         private static Vector3 _leaderPositionLastFrame;
         private static bool _hasLeaderPositionLastFrame;
         private static Vector3 _leaderDirection;
@@ -92,6 +93,7 @@ namespace ErenshorFollow
         private static bool _hasPositionAtLastPathAttempt;
         private static bool _waypointIsSidestep;
         private static string _lastFollowDiagnosticSignature;
+        private static string _lastSidestepDiagnostic = "none";
         private static bool _catchupActive;
 
         // Nav-target hysteresis: stop once within StopDistance of the trailing point, don't resume
@@ -241,6 +243,7 @@ namespace ErenshorFollow
             _waypointIsSidestep = false;
             _catchupActive = false;
             _lastFollowDiagnosticSignature = null;
+            _lastSidestepDiagnostic = "none";
 
             // LeaderController sets its leg active before it calls FollowController.Start(), so this cleanly
             // distinguishes ordinary /efollow from the existing Lead/Expedition movement substrate without
@@ -325,6 +328,7 @@ namespace ErenshorFollow
             _waypointIsSidestep = false;
             _catchupActive = false;
             _lastFollowDiagnosticSignature = null;
+            _lastSidestepDiagnostic = "none";
             DirectIntent.Cancel();
             State = DriveState.Idle;
         }
@@ -502,11 +506,29 @@ namespace ErenshorFollow
                         float leftX, leftZ, rightX, rightZ;
                         FollowLocalObstaclePolicy.SidestepCandidates(from.x, from.z, steerDirection.x, steerDirection.z,
                             FollowLocalObstaclePolicy.SidestepRadius, out leftX, out leftZ, out rightX, out rightZ);
-                        resolvedBySidestep =
-                            TrySidestepWaypoint(from, new Vector3(leftX, from.y, leftZ)) ||
-                            TrySidestepWaypoint(from, new Vector3(rightX, from.y, rightZ));
+                        NavMeshHit continuationTargetHit;
+                        bool continuationTargetSampled = NavMesh.SamplePosition(to, out continuationTargetHit, 8f, NavMesh.AllAreas);
+                        SidestepProbe leftProbe = ProbeSidestepWaypoint(from,
+                            new Vector3(leftX, from.y, leftZ), continuationTargetHit, continuationTargetSampled, "left");
+                        SidestepProbe rightProbe = ProbeSidestepWaypoint(from,
+                            new Vector3(rightX, from.y, rightZ), continuationTargetHit, continuationTargetSampled, "right");
+                        FollowSidestepChoice choice = FollowLocalObstaclePolicy.ChooseSidestep(
+                            leftProbe.Policy, rightProbe.Policy);
+                        if (choice == FollowSidestepChoice.Left)
+                        {
+                            ApplySidestepWaypoint(leftProbe);
+                            resolvedBySidestep = true;
+                        }
+                        else if (choice == FollowSidestepChoice.Right)
+                        {
+                            ApplySidestepWaypoint(rightProbe);
+                            resolvedBySidestep = true;
+                        }
+                        _lastSidestepDiagnostic = DescribeSidestepProbe(leftProbe, rightProbe, choice);
                     }
+                    else _lastSidestepDiagnostic = "left=invalid right=invalid selected=none reason=no-steering-direction";
                 }
+                else _lastSidestepDiagnostic = "none";
 
                 if (!resolvedBySidestep)
                 {
@@ -1149,24 +1171,99 @@ namespace ErenshorFollow
             return Vector3.Distance(a, b);
         }
 
-        // Attempts one lateral local-obstacle probe point. Uses its own NavMeshPath buffer so a failed
-        // probe can never corrupt the accepted `Path` the ordinary repath block relies on. Only accepts
-        // the candidate when it is both NavMesh-reachable AND meaningfully different from the player's
-        // current (stuck) position - the same acceptance bar as any other approach point in this mod.
-        private static bool TrySidestepWaypoint(Vector3 from, Vector3 probe)
+        private static float RouteLength(Vector3[] corners)
         {
+            if (corners == null || corners.Length < 2) return float.MaxValue;
+            float total = 0f;
+            for (int i = 1; i < corners.Length; i++) total += Vector3.Distance(corners[i - 1], corners[i]);
+            return total;
+        }
+
+        private sealed class SidestepProbe
+        {
+            internal readonly FollowSidestepCandidate Policy = new FollowSidestepCandidate();
+            internal Vector3[] Corners = new Vector3[0];
+            internal string Side;
+            internal string FailureReason = "none";
+        }
+
+        // Evaluates one bounded lateral probe without mutating the accepted waypoint. Both sides are
+        // always probed before the pure policy chooses one, so a merely valid first candidate cannot
+        // hide a materially better continuation on the other side.
+        private static SidestepProbe ProbeSidestepWaypoint(Vector3 from, Vector3 probe,
+            NavMeshHit continuationTargetHit, bool continuationTargetSampled, string side)
+        {
+            SidestepProbe result = new SidestepProbe();
+            result.Side = side;
+            result.Policy.TieBreakX = probe.x;
+            result.Policy.TieBreakZ = probe.z;
             NavMeshHit hit;
-            if (!NavMesh.SamplePosition(probe, out hit, FollowLocalObstaclePolicy.SidestepRadius, NavMesh.AllAreas)) return false;
-            if (HorizontalDistance(from, hit.position) < 0.3f) return false;
-            if (!NavMesh.CalculatePath(from, hit.position, NavMesh.AllAreas, SidestepPath)) return false;
-            if (SidestepPath.status == NavMeshPathStatus.PathInvalid || SidestepPath.corners == null || SidestepPath.corners.Length < 2) return false;
-            _waypoint = SidestepPath.corners[1];
-            _hasNextCorner = SidestepPath.corners.Length > 2;
-            _nextCorner = _hasNextCorner ? SidestepPath.corners[2] : Vector3.zero;
+            if (!NavMesh.SamplePosition(probe, out hit, FollowLocalObstaclePolicy.SidestepRadius, NavMesh.AllAreas))
+            {
+                result.FailureReason = "sample-failed";
+                return result;
+            }
+            result.Policy.Sampled = true;
+            if (HorizontalDistance(from, hit.position) < 0.3f)
+            {
+                result.FailureReason = "too-close-to-blocked-position";
+                return result;
+            }
+            if (!NavMesh.CalculatePath(from, hit.position, NavMesh.AllAreas, SidestepPath) ||
+                SidestepPath.status == NavMeshPathStatus.PathInvalid || SidestepPath.corners == null ||
+                SidestepPath.corners.Length < 2)
+            {
+                result.FailureReason = "sidestep-path-invalid";
+                return result;
+            }
+            result.Policy.PathValid = true;
+            result.Corners = (Vector3[])SidestepPath.corners.Clone();
+            float blockedDistance = HorizontalDistance(from, _hasWaypoint ? _waypoint : hit.position);
+            float remainingDistance = HorizontalDistance(hit.position, _hasWaypoint ? _waypoint : continuationTargetHit.position);
+            result.Policy.Progress = blockedDistance - remainingDistance;
+            float sideLength = RouteLength(result.Corners);
+            result.Policy.CombinedRouteLength = sideLength;
+
+            if (continuationTargetSampled && NavMesh.CalculatePath(hit.position, continuationTargetHit.position,
+                NavMesh.AllAreas, SidestepContinuationPath) &&
+                SidestepContinuationPath.status != NavMeshPathStatus.PathInvalid &&
+                SidestepContinuationPath.corners != null && SidestepContinuationPath.corners.Length >= 2)
+            {
+                result.Policy.ContinuationValid = true;
+                result.Policy.CombinedRouteLength += RouteLength(SidestepContinuationPath.corners);
+                result.FailureReason = "continuation-valid";
+            }
+            else result.FailureReason = "sidestep-valid-no-continuation";
+            return result;
+        }
+
+        private static void ApplySidestepWaypoint(SidestepProbe probe)
+        {
+            if (probe == null || !probe.Policy.Sampled || !probe.Policy.PathValid || probe.Corners == null ||
+                probe.Corners.Length < 2) return;
+            _waypoint = probe.Corners[1];
+            _hasNextCorner = probe.Corners.Length > 2;
+            _nextCorner = _hasNextCorner ? probe.Corners[2] : Vector3.zero;
             _hasWaypoint = true;
             _routeFailureSince = 0f;
             _waypointIsSidestep = true;
-            return true;
+        }
+
+        private static string DescribeSidestepProbe(SidestepProbe left, SidestepProbe right,
+            FollowSidestepChoice choice)
+        {
+            return "left=" + DescribeSidestepProbe(left) + " right=" + DescribeSidestepProbe(right) +
+                " selected=" + choice + " reason=both-evaluated-objective-continuation";
+        }
+
+        private static string DescribeSidestepProbe(SidestepProbe probe)
+        {
+            if (probe == null) return "missing";
+            return "sampled=" + probe.Policy.Sampled + " path=" + probe.Policy.PathValid +
+                " continuation=" + probe.Policy.ContinuationValid +
+                " progress=" + probe.Policy.Progress.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
+                " combined=" + probe.Policy.CombinedRouteLength.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
+                " reason=" + probe.FailureReason;
         }
 
         // Bounded diagnostic: only logs when the dedupe signature actually changes (a real repath/state
@@ -1205,7 +1302,8 @@ namespace ErenshorFollow
                 " leashDistance=" + FollowLocalObstaclePolicy.LeaderTooFarDistance.ToString("F1") +
                 " normalSpeed=" + normalSpeed.ToString("F2") +
                 " appliedSpeed=" + appliedSpeed.ToString("F2") +
-                " catchupActive=" + catchupActive);
+                " catchupActive=" + catchupActive +
+                " sidestep=" + _lastSidestepDiagnostic);
         }
 
         private static string FormatVector(Vector3 value)

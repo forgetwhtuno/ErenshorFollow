@@ -32,6 +32,14 @@ internal static class RouteCandidatePolicyTests
         Run("candidate diagnostic reports every measured distance, not only the verdict", CandidateDiagnosticReportsDistances);
         Run("candidate diagnostic distinguishes a far-approach rejection from a no-evidence rejection", CandidateDiagnosticDistinguishesRejectionCauses);
         Run("candidate diagnostic never emits an empty reason", CandidateDiagnosticHandlesMissingReason);
+        Run("large-trigger interior approach outranks extreme edge", LargeTriggerInteriorApproachWins);
+        Run("large-trigger extreme edge remains bounded fallback", LargeTriggerExtremeEdgeFallback);
+        Run("one quality-poor accepted edge requests bounded entrance probing", QualityPoorEdgeRequestsEntranceProbe);
+        Run("reasonable entrance does not request redundant probing", ReasonableEntranceSkipsProbe);
+        Run("same-crossing centered complete beats left and right", CenteredCompleteWinsSameCrossing);
+        Run("invalid center does not gate a valid offset", InvalidCenterKeepsOffset);
+        Run("complete offset beats partial center", CompleteBeatsPartialCenter);
+        Run("centering never compares different crossings", CenteringIsScopedToCrossing);
         Console.WriteLine("PASS: " + _passed + " route-candidate policy tests.");
         return 0;
     }
@@ -197,6 +205,119 @@ internal static class RouteCandidatePolicyTests
         string description = RouteCandidatePolicy.DescribeCandidate(candidate, null);
         Require(description.IndexOf("result=unevaluated", StringComparison.Ordinal) >= 0, description);
         Require(description.IndexOf("reason=no evaluation", StringComparison.Ordinal) >= 0, description);
+    }
+
+    private static void LargeTriggerInteriorApproachWins()
+    {
+        RouteCandidatePolicy.Candidate edge = Candidate("face1", true, RouteCandidatePolicy.PathKind.Partial,
+            10, 195.36f, 2.25f, 0f, 120f);
+        edge.HasApproachQuality = true;
+        edge.ApproachQualityDistance = 80f;
+        edge.SeedLabel = "face1";
+        RouteCandidatePolicy.Candidate interior = Candidate("midApproach0", true, RouteCandidatePolicy.PathKind.Partial,
+            10, 195.36f, 2.25f, 0f, 140f);
+        interior.HasApproachQuality = true;
+        interior.ApproachQualityDistance = 18f;
+        interior.SeedLabel = "midApproach0";
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { edge, interior });
+        Require(ranked.Count == 2, "both otherwise-safe approaches should remain accepted");
+        Require(ranked[0].Candidate.SeedLabel == "midApproach0",
+            "interior/natural approach must outrank the extreme trigger edge before route length");
+        string description = RouteCandidatePolicy.DescribeCandidate(ranked[0].Candidate,
+            RouteCandidatePolicy.Evaluate(ranked[0].Candidate));
+        Require(description.IndexOf("qualityDist=18.00", StringComparison.Ordinal) >= 0, description);
+    }
+
+    private static void LargeTriggerExtremeEdgeFallback()
+    {
+        RouteCandidatePolicy.Candidate edge = Candidate("face1", true, RouteCandidatePolicy.PathKind.Partial,
+            10, 195.36f, 2.25f, 0f, 120f);
+        edge.HasApproachQuality = true;
+        edge.ApproachQualityDistance = 80f;
+        edge.SeedLabel = "face1";
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { edge });
+        Require(ranked.Count == 1 && ranked[0].Candidate.SeedLabel == "face1",
+            "the extreme edge remains a usable bounded fallback when it is the only route");
+    }
+
+    private static void QualityPoorEdgeRequestsEntranceProbe()
+    {
+        RouteCandidatePolicy.Candidate edge = Candidate("face1", true, RouteCandidatePolicy.PathKind.Partial,
+            4, 100f, 2f, 0f, 20f);
+        edge.HasApproachQuality = true;
+        edge.ApproachQualityDistance = 80f;
+        Require(RouteCandidatePolicy.ShouldProbeRouteFacingEntrance(RouteCandidatePolicy.Evaluate(edge), 40f),
+            "a lone quality-poor large-trigger edge should trigger the bounded second-stage probe");
+    }
+
+    private static void ReasonableEntranceSkipsProbe()
+    {
+        RouteCandidatePolicy.Candidate entrance = Candidate("routeEntrance0", true, RouteCandidatePolicy.PathKind.Partial,
+            4, 100f, 2f, 0f, 100f);
+        entrance.HasApproachQuality = true;
+        entrance.ApproachQualityDistance = 6f;
+        Require(!RouteCandidatePolicy.ShouldProbeRouteFacingEntrance(RouteCandidatePolicy.Evaluate(entrance), 40f),
+            "a reasonable entrance should not pay for another probe");
+    }
+
+    private static void CenteredCompleteWinsSameCrossing()
+    {
+        RouteCandidatePolicy.Candidate left = CenteredCandidate("left", 12f, RouteCandidatePolicy.PathKind.Complete, "crossing");
+        RouteCandidatePolicy.Candidate center = CenteredCandidate("center", 0f, RouteCandidatePolicy.PathKind.Complete, "crossing");
+        RouteCandidatePolicy.Candidate right = CenteredCandidate("right", 14f, RouteCandidatePolicy.PathKind.Complete, "crossing");
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { right, left, center });
+        Require(ranked.Count == 3 && ranked[0].Candidate.StableKey == "center",
+            "a valid centered approach must outrank equally valid lateral approaches");
+    }
+
+    private static void InvalidCenterKeepsOffset()
+    {
+        RouteCandidatePolicy.Candidate center = CenteredCandidate("center-invalid", 0f, RouteCandidatePolicy.PathKind.Invalid, "crossing");
+        center.Sampled = false;
+        RouteCandidatePolicy.Candidate right = CenteredCandidate("right-valid", 10f, RouteCandidatePolicy.PathKind.Complete, "crossing");
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { center, right });
+        Require(ranked.Count == 1 && ranked[0].Candidate.StableKey == "right-valid",
+            "centering must not become a hard admission gate");
+    }
+
+    private static void CompleteBeatsPartialCenter()
+    {
+        RouteCandidatePolicy.Candidate center = CenteredCandidate("center-partial", 0f, RouteCandidatePolicy.PathKind.Partial, "crossing");
+        RouteCandidatePolicy.Candidate offset = CenteredCandidate("offset-complete", 10f, RouteCandidatePolicy.PathKind.Complete, "crossing");
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { center, offset });
+        Require(ranked.Count == 2 && ranked[0].Candidate.StableKey == "offset-complete",
+            "path safety class must outrank cosmetic centering");
+    }
+
+    private static void CenteringIsScopedToCrossing()
+    {
+        RouteCandidatePolicy.Candidate centered = CenteredCandidate("other-center", 0f, RouteCandidatePolicy.PathKind.Complete, "other-crossing");
+        RouteCandidatePolicy.Candidate shortRoute = CenteredCandidate("this-short", 20f, RouteCandidatePolicy.PathKind.Complete, "this-crossing");
+        shortRoute.RouteLength = 1f;
+        centered.RouteLength = 50f;
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(
+            new List<RouteCandidatePolicy.Candidate> { centered, shortRoute });
+        Require(ranked.Count == 2 && ranked[0].Candidate.StableKey == "this-short",
+            "centerline rank must not reorder different native crossings");
+    }
+
+    private static RouteCandidatePolicy.Candidate CenteredCandidate(string key, float lateral,
+        RouteCandidatePolicy.PathKind path, string crossing)
+    {
+        RouteCandidatePolicy.Candidate candidate = Candidate(key, true, path, 4, 20f,
+            path == RouteCandidatePolicy.PathKind.Partial ? 3f : 0f, 1f, 10f);
+        candidate.HasLateralCentering = true;
+        candidate.CenteringGroup = crossing;
+        candidate.FaceLabel = "routeFaceZ+";
+        candidate.FaceCenterPosition = "(0.00, 0.00, 0.00)";
+        candidate.FaceTangent = "(1.00, 0.00, 0.00)";
+        candidate.LateralOffset = lateral;
+        return candidate;
     }
 
     private static void RouteFailureMessageNoCandidates()

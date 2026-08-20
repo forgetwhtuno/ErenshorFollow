@@ -1015,9 +1015,15 @@ namespace ErenshorFollow
             string writer, out string failure)
         {
             failure = null;
+            LocalZoneRoutePlanner.RouteOption selected = _zoneRouteIndex >= 0 && _zoneRouteIndex < ZoneRouteOptions.Count
+                ? ZoneRouteOptions[_zoneRouteIndex] : null;
+            ExpeditionOrderProofPolicy.Record orderProof = ExpeditionOrderProofDiagnostic.Begin(_leader, target,
+                selected, _destinationName, _travelMovementOwned);
             if (_leader == null)
             {
                 failure = "selected Sim avatar is unavailable";
+                ExpeditionOrderProofDiagnostic.Complete(orderProof, _travelMovementOwned, false, false,
+                    "order_precondition", "leader_not_available");
                 return false;
             }
 
@@ -1041,6 +1047,8 @@ namespace ErenshorFollow
             {
                 if (ownTravelMovement) ReleaseTravelMovementOwnership("order_issue_failed", true);
                 failure = "selected Sim rejected the guard travel order (" + ex.GetType().Name + ")";
+                ExpeditionOrderProofDiagnostic.Complete(orderProof, _travelMovementOwned, false, false,
+                    "movement_ownership", "exception:" + ex.GetType().Name);
                 return false;
             }
 
@@ -1049,23 +1057,30 @@ namespace ErenshorFollow
             {
                 if (ownTravelMovement) ReleaseTravelMovementOwnership("npc_owner_missing", true);
                 failure = "selected Sim has no resolvable native NPC movement owner";
+                ExpeditionOrderProofDiagnostic.Complete(orderProof, _travelMovementOwned, false, false,
+                    "mover_owner", "npc_owner_missing");
                 return false;
             }
 
             try
             {
                 PrepareAgentForOrder(npc, target, ownTravelMovement);
+                // Read-only evidence for the exact target that the next existing call hands to native movement.
+                ExpeditionOrderProofDiagnostic.ProbeMover(orderProof, npc, target);
                 npc.HighPriorityNavUpdate(target);
                 NoteMovementWriter(writer ?? "Follow.Order");
                 _nextNativeNavRefresh = Time.time + 0.4f;
                 NoteMovementBoundary((writer ?? "Follow.Order") + ".after");
                 TickMovementTelemetry();
+                ExpeditionOrderProofDiagnostic.Complete(orderProof, _travelMovementOwned, true, true, null, null);
                 return true;
             }
             catch (Exception ex)
             {
                 if (ownTravelMovement) ReleaseTravelMovementOwnership("native_order_failed", true);
                 failure = "native NPC movement order failed (" + ex.GetType().Name + ")";
+                ExpeditionOrderProofDiagnostic.Complete(orderProof, _travelMovementOwned, true, false,
+                    "native_order", "exception:" + ex.GetType().Name);
                 return false;
             }
         }
@@ -1243,6 +1258,22 @@ namespace ErenshorFollow
                 " | " + DescribeNativeMovementState(_monster == null ? CurrentZoneTarget() : _monster.transform.position) +
                 " | last=" + SafeName(_lastMovementDiagnostic) +
                 " | crossing=" + SafeName(_lastCrossingDiagnostic);
+        }
+
+        internal static string DescribeSelectedRouteDiagnostic()
+        {
+            if (!_active || _destination == null || _zoneEvaluation == null || _zoneEvaluation.Candidate == null)
+                return "selected=<none> reason=no active selected current-leg route";
+            RouteCandidatePolicy.Candidate candidate = _zoneEvaluation.Candidate;
+            string key = _zoneRouteIndex >= 0 && _zoneRouteIndex < ZoneRouteOptions.Count
+                ? ZoneRouteOptions[_zoneRouteIndex].StableKey : "runtime";
+            return "selected=" + key +
+                " seed=" + (string.IsNullOrWhiteSpace(candidate.SeedLabel) ? "unknown" : candidate.SeedLabel) +
+                " approach=" + LocalZoneRoutePlanner.FormatVector(_zoneApproach) +
+                " qualityRef=" + (string.IsNullOrWhiteSpace(candidate.ApproachQualityReferencePosition) ? "<none>" : candidate.ApproachQualityReferencePosition) +
+                " quality=" + (candidate.HasApproachQuality ? candidate.ApproachQualityDistance.ToString("F2") : "n/a") +
+                " route=" + candidate.RouteLength.ToString("F2") +
+                " reason=" + _zoneEvaluation.Reason;
         }
 
         internal static bool IsExactExpeditionLeader(SimPlayer sim)
