@@ -477,7 +477,7 @@ Assert-Contains $ownershipPolicy 'input.ExpeditionActive && input.ExactLeader &&
 
 Write-Host "Erenshor Follow read-only egress-POI diagnostic guards: PASS" -ForegroundColor Green
 
-Write-Host "Erenshor Follow 0.6.19 zoneline crossing static guards: PASS" -ForegroundColor Green
+Write-Host "Erenshor Follow 0.6.22 zoneline crossing static guards: PASS" -ForegroundColor Green
 
 # UI workspace normalization pass: compact status box + shared right-side default workspace,
 # without changing Initialize's positional call site (see StandaloneFallbackUi.cs comment on why).
