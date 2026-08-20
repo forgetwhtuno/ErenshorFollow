@@ -138,6 +138,50 @@ namespace ErenshorFollow
             Console.WriteLine("PASS: destination organization remains stable");
         }
 
+        private static void DirectLiveEdgeAbsentFromAtlas()
+        {
+            Dictionary<string, List<string>> graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            { { "Duskenlight", new List<string> { "Hidden" } }, { "Hidden", new List<string>() }, { "Jaws", new List<string>() } };
+            List<string> route; bool ambiguous; string failure;
+            Assert(ZoneRouteGraphPolicy.TryBuild(graph, "Duskenlight", "Jaws", new [] { "Hidden", "Jaws", "Windwashed" }, out route, out ambiguous, out failure),
+                "direct live edge absent from authored graph is route-valid");
+            Assert(route.Count == 2 && route[1] == "Jaws", "direct live Jaws-style edge becomes selected first hop");
+        }
+
+        private static void LiveDuplicateAndOptionalPoiDoNotGate()
+        {
+            Dictionary<string, List<string>> graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            { { "Duskenlight", new List<string> { "Hidden" } }, { "Hidden", new List<string>() }, { "Jaws", new List<string>() }, { "Windwashed", new List<string>() } };
+            Dictionary<string, List<string>> runtime = ZoneRouteGraphPolicy.BuildRuntimeGraph(graph, "Duskenlight",
+                new [] { "hidden", "Jaws", "Windwashed" });
+            Assert(runtime["Duskenlight"].Count == 3, "authored and live duplicate produce one canonical runtime edge");
+            List<ExpeditionRouteChoice> choices = ZoneRouteGraphPolicy.ListReachable(graph, "Duskenlight", new [] { "Hidden", "Jaws", "Windwashed" });
+            bool hidden = false, jaws = false, windwashed = false;
+            for (int i = 0; i < choices.Count; i++) { if (choices[i].DestinationName == "Hidden") hidden = true; if (choices[i].DestinationName == "Jaws") jaws = true; if (choices[i].DestinationName == "Windwashed") windwashed = true; }
+            Assert(hidden && jaws && windwashed, "multiple live exits remain valid without optional egress metadata");
+        }
+
+        private static void LiveEdgeEnablesMultiHopAndRejectsSelf()
+        {
+            Dictionary<string, List<string>> graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            { { "A", new List<string>() }, { "B", new List<string> { "C" } }, { "C", new List<string> { "D" } }, { "D", new List<string>() } };
+            List<string> route; bool ambiguous; string failure;
+            Assert(ZoneRouteGraphPolicy.TryBuild(graph, "A", "D", new [] { "A", "B" }, out route, out ambiguous, out failure),
+                "current live edge enables authored multi-hop route");
+            Assert(route.Count == 4 && route[1] == "B", "multi-hop route starts through executable live first hop");
+            Dictionary<string, List<string>> runtime = ZoneRouteGraphPolicy.BuildRuntimeGraph(graph, "A", new [] { "A" });
+            Assert(runtime["A"].Count == 0, "self live edge does not become route progress");
+        }
+
+        private static void IneligibleOrMissingLiveHopFailsGracefully()
+        {
+            Dictionary<string, List<string>> graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            { { "A", new List<string> { "X" } }, { "X", new List<string>() }, { "B", new List<string>() } };
+            List<string> route; bool ambiguous; string failure;
+            Assert(!ZoneRouteGraphPolicy.TryBuild(graph, "A", "B", new string[0], out route, out ambiguous, out failure) && route.Count == 0,
+                "no authored or eligible live edge remains a graceful no-route result");
+        }
+
         public static int Main()
         {
             AdjacentRoute();
@@ -148,6 +192,10 @@ namespace ErenshorFollow
             RecalculationCanChooseNewShorterRoute();
             AsymmetricAtlasLinksRemainReachable();
             DeterministicOrganization();
+            DirectLiveEdgeAbsentFromAtlas();
+            LiveDuplicateAndOptionalPoiDoNotGate();
+            LiveEdgeEnablesMultiHopAndRejectsSelf();
+            IneligibleOrMissingLiveHopFailsGracefully();
             Console.WriteLine("Expedition route graph tests passed: " + _passed);
             return 0;
         }

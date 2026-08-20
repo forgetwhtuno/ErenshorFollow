@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using ErenshorFollow;
 
 internal static class CrossingSeedGeometryPolicyTests
@@ -43,12 +44,24 @@ internal static class CrossingSeedGeometryPolicyTests
         Run("approach-face lower-mid offsets choose the route-facing normalized box axis", ApproachFaceUsesNormalizedRouteDirection);
         Run("approach-face lower-mid offsets stay bounded to three surface samples", ApproachFaceOffsetsStayBounded);
         // 0.6.14 live 0.6.13 proof: authoritative Hidden OBB is localSize=(1,1,1),
-        // lossyScale=(80,47.11,100), rotationY~=40.27. The lower-mid axis cross still missed every
-        // NavMesh sample. A zero-sample-only inner ring must cover the formerly live approach without
-        // increasing the normal working-crossing cost.
+        // lossyScale=(80,47.11,10), rotationY~=40.27. The world-scale intermediate repair must
+        // generate the route-facing lower-mid band before any fallback policy is considered.
         Run("large zero-sample trigger gets a bounded world-metre inner ring", LargeTriggerGetsBoundedFallbackRing);
         Run("small trigger skips the redundant fallback ring", SmallTriggerSkipsFallbackRing);
-        Run("live rotated Hidden OBB ring reaches the formerly working approach within the 4m sample sphere", LiveRotatedHiddenRingReachesKnownApproach);
+        Run("live rotated Hidden OBB intermediate band reaches the formerly working approach", LiveRotatedHiddenIntermediateBandReachesKnownApproach);
+        // 0.6.18 live 0.6.17 proof: vitheo|zoneline (1) produced generatedSeeds=22, samples=1,
+        // accepted=1, selectedSeed=face1, qualityRef=routeFaceZ+, qualityDist=40.31. Ranking had no
+        // alternative because the second-stage entrance band could only place three centre-height
+        // points on one depth. These pin the repaired bounded route-facing probe set.
+        Run("route-facing probes and the quality reference name the same face", RouteFacingProbesCoverTheQualityReferenceFace);
+        Run("a bounded route-facing probe outranks the lone extreme face on the live shape class", LiveShapeClassRouteFacingProbeOutranksExtremeFace);
+        Run("a lone extreme face stays legal when every route-facing probe fails", ExtremeFaceRemainsLegalWhenEveryProbeFails);
+        Run("small triggers never enter second-stage route-facing probing", SmallTriggerSkipsRouteFacingProbing);
+        Run("tall narrow triggers keep three tangent steps and both levels", TallNarrowTriggerKeepsThreeTangentSteps);
+        Run("short triggers keep the centre level only", ShortTriggerKeepsCentreLevelOnly);
+        Run("rotated triggers keep every probe strictly inside the oriented box", RotatedTriggerProbesStayInsideNormalizedBox);
+        Run("production primary budget leaves all eight fallback slots", PrimaryBudgetReservesFallbackSlots);
+        Run("zero-sample fallback can add every midRing label", ZeroSampleFallbackRetainsAllEightLabels);
         Console.WriteLine("PASS: " + _passed + " crossing seed geometry policy tests.");
         return 0;
     }
@@ -69,6 +82,33 @@ internal static class CrossingSeedGeometryPolicyTests
         Require(posX && negX && posZ && negZ,
             "a one-face-accessible trigger must be reachable from any of the four horizontal faces");
         Require(floor, "the floor face must remain seeded for tall triggers");
+    }
+
+    private static void PrimaryBudgetReservesFallbackSlots()
+    {
+        Require(CrossingSeedBudgetPolicy.PrimarySeedBudget == 30, "historical primary budget must remain 30");
+        Require(CrossingSeedBudgetPolicy.ZeroSampleFallbackBudget == 8, "fallback reservation must remain eight");
+        Require(CrossingSeedBudgetPolicy.PrimarySeedBudget + CrossingSeedBudgetPolicy.ZeroSampleFallbackBudget
+            == CrossingSeedBudgetPolicy.MaxSeedsPerCrossing, "primary plus fallback must exactly fill the production budget");
+        Require(CrossingSeedBudgetPolicy.PrimarySeedBudget <= 30, "primary discovery must not consume fallback capacity");
+    }
+
+    private static void ZeroSampleFallbackRetainsAllEightLabels()
+    {
+        List<string> simulatedPrimary = new List<string>();
+        for (int i = 0; i < CrossingSeedBudgetPolicy.PrimarySeedBudget; i++) simulatedPrimary.Add("primary" + i);
+        string[] labels = { "midRing0", "midRing1", "midRing2", "midRing3",
+            "midRing4", "midRing5", "midRing6", "midRing7" };
+        for (int i = 0; i < labels.Length; i++)
+        {
+            Require(CrossingSeedBudgetPolicy.CanAddFallback(simulatedPrimary.Count),
+                "fallback slot " + labels[i] + " must remain available after primary zero-sample failure");
+            simulatedPrimary.Add(labels[i]);
+        }
+        Require(simulatedPrimary.Count == CrossingSeedBudgetPolicy.MaxSeedsPerCrossing,
+            "all eight fallback probes must fit after the full primary pass");
+        for (int i = 0; i < labels.Length; i++)
+            Require(simulatedPrimary.Contains(labels[i]), labels[i] + " must be available on fallback");
     }
 
     private static void VerticalProbeSpansAndIsBounded()
@@ -458,30 +498,327 @@ internal static class CrossingSeedGeometryPolicyTests
         Require(ring.Length == 0, "a small trigger adds no ring because the centre sample already covers it");
     }
 
-    private static void LiveRotatedHiddenRingReachesKnownApproach()
+    private static void LiveRotatedHiddenIntermediateBandReachesKnownApproach()
     {
-        // 0.6.13 explicit /elead diag exposed the authoritative BoxCollider rather than only its AABB:
-        // localSize=(1,1,1), lossyScale=(80,47.11,100), Y rotation ~40.27 degrees. The historical live
-        // approach transforms into roughly normalized local (0.1813,-0.4815,0.1000). This test does not
-        // special-case a destination in production; it pins the geometry class that the live diagnostic proved.
-        const float halfWorldX = 40f;
-        const float halfWorldY = 23.555f;
-        const float halfWorldZ = 50f;
-        const float knownX = 0.18130427f;
-        const float knownY = -0.4815f;
-        const float knownZ = 0.10001832f;
-        CrossingSeedGeometryPolicy.Point3[] ring = CrossingSeedGeometryPolicy.LowerIntermediateFallbackRingOffsets(
-            halfWorldX, halfWorldZ, 4f, 8);
+        // Exact live Hidden geometry: localSize=(1,1,1), rotationY=40.27, lossyScale=(80,47.11,10),
+        // origin=(223.37,61.40,117.58), with the historically usable point near (232.14,50.06,116.71).
+        CrossingSeedGeometryPolicy.Point3 localHalf = new CrossingSeedGeometryPolicy.Point3(0.5f, 0.5f, 0.5f);
+        CrossingSeedGeometryPolicy.Point3 worldHalf = new CrossingSeedGeometryPolicy.Point3(40f, 23.555f, 5f);
+        Require(Math.Abs(worldHalf.Y - 23.555f) < 0.001f, "world half Y must be 23.555m");
+        Require(!CrossingSeedGeometryPolicy.IntermediateVerticalLayersMeaningfullyDifferFromCenter(localHalf, 4f),
+            "the old local-half predicate must fail this fixture");
+        Require(CrossingSeedGeometryPolicy.IntermediateVerticalLayersMeaningfullyDifferFromCenter(worldHalf, 4f),
+            "the world-scale predicate must require the intermediate layer");
+
+        CrossingSeedGeometryPolicy.Point3 localStart = new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1.5f);
+        Require(CrossingSeedGeometryPolicy.SelectRouteFacingAxis(localStart, localHalf)
+            == CrossingSeedGeometryPolicy.RouteFaceAxis.ZPositive, "live player-side approach must choose +Z face");
+        CrossingSeedGeometryPolicy.Point3[] offsets = CrossingSeedGeometryPolicy.LowerIntermediateApproachFaceOffsets(localStart, localHalf);
+        Require(offsets.Length == 3, "live intermediate route-facing band must generate three midApproach probes");
+
+        const float originX = 223.37f;
+        const float originY = 61.40f;
+        const float originZ = 117.58f;
+        const float yaw = 40.27f;
+        const float knownX = 232.14f;
+        const float knownY = 50.06f;
+        const float knownZ = 116.71f;
+        double radians = yaw * Math.PI / 180.0;
+        float cos = (float)Math.Cos(radians);
+        float sin = (float)Math.Sin(radians);
         float best = float.MaxValue;
-        foreach (CrossingSeedGeometryPolicy.Point3 p in ring)
+        foreach (CrossingSeedGeometryPolicy.Point3 p in offsets)
         {
-            float dx = (p.X - knownX) * halfWorldX;
-            float dy = (p.Y - knownY) * halfWorldY;
-            float dz = (p.Z - knownZ) * halfWorldZ;
+            float localX = p.X * localHalf.X * 80f;
+            float localY = p.Y * localHalf.Y * 47.11f;
+            float localZ = p.Z * localHalf.Z * 10f;
+            float worldX = originX + localX * cos + localZ * sin;
+            float worldY = originY + localY;
+            float worldZ = originZ - localX * sin + localZ * cos;
+            float dx = worldX - knownX;
+            float dy = worldY - knownY;
+            float dz = worldZ - knownZ;
             float d = (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
             if (d < best) best = d;
         }
-        Require(best < 4f, "at least one bounded ring seed must place the known walkable approach inside its 4m SamplePosition sphere; best=" + best);
+        Require(best < 4f, "at least one midApproach seed must place the known walkable approach inside its 4m SamplePosition sphere; best=" + best);
+    }
+
+    // ---- 0.6.18 live Vitheo large-trigger sampling repair --------------------------------------
+    //
+    // Live 0.6.17, crossing vitheo|zoneline (1), rawPos=(269.946, 28.200, 54.790):
+    // generatedSeeds=22, filteredSeeds=0, samples=1, accepted=1. The single sampled/accepted
+    // candidate was seed=face1 - the oriented -X face centre - at approach=(229.95, 28.53, 54.79),
+    // qualityDist=40.31 measured against qualityRef=routeFaceZ+. Ranking was not the failure: with
+    // one accepted candidate there was nothing to rank, so the extreme face was selected by default
+    // and the party walked 40m toward the far hill.
+    //
+    // The fixture below reproduces that SHAPE CLASS generically - a large oriented trigger, a
+    // route-facing quality reference on one axis, a lone viable extreme candidate on another face,
+    // and no NavMesh at the mathematically ideal face centre - using no Vitheo coordinate and no
+    // hardcoded destination. It requires a bounded route-facing probe to become a real candidate and
+    // to outrank the extreme face under the UNCHANGED 0.6.17 ranking policy, and it requires the
+    // extreme face to remain a legal selection when every probe fails.
+
+    private const float FixtureYawDegrees = 30f;
+    private const float FixtureSampleRadius = 4f;
+    // A unit BoxCollider (localSize 1,1,1 -> local half 0.5) under a large non-uniform lossyScale,
+    // which is the authoritative shape the live diagnostics have repeatedly reported for these
+    // zonelines. Oriented world half axes therefore are (40, 20, 50) metres.
+    private static readonly float[] FixtureWorldHalf = { 40f, 20f, 50f };
+    private static readonly float[] FixtureCenter = { 120f, 28f, -60f };
+    private static readonly CrossingSeedGeometryPolicy.Point3 FixtureLocalHalf =
+        new CrossingSeedGeometryPolicy.Point3(0.5f, 0.5f, 0.5f);
+
+    // Normalized local offset in [-1,+1] -> world, through the box's own half axes, yaw and centre.
+    private static float[] FixtureToWorld(CrossingSeedGeometryPolicy.Point3 normalized)
+    {
+        float x = normalized.X * FixtureWorldHalf[0];
+        float y = normalized.Y * FixtureWorldHalf[1];
+        float z = normalized.Z * FixtureWorldHalf[2];
+        double yaw = FixtureYawDegrees * Math.PI / 180.0;
+        float cos = (float)Math.Cos(yaw);
+        float sin = (float)Math.Sin(yaw);
+        return new[]
+        {
+            FixtureCenter[0] + x * cos + z * sin,
+            FixtureCenter[1] + y,
+            FixtureCenter[2] - x * sin + z * cos
+        };
+    }
+
+    // Stand-in for NavMesh.SamplePosition: a true 3D sphere search against the fixture's walkable
+    // points, at the same bounded radius production uses. Nothing is widened for the test.
+    private static bool FixtureSample(float[] point, float[][] walkable, float radius, out float[] hit)
+    {
+        hit = null;
+        float best = float.MaxValue;
+        for (int i = 0; i < walkable.Length; i++)
+        {
+            float d = FixtureDistance(point, walkable[i]);
+            if (d <= radius && d < best)
+            {
+                best = d;
+                hit = walkable[i];
+            }
+        }
+        return hit != null;
+    }
+
+    private static float FixtureDistance(float[] a, float[] b)
+    {
+        float dx = a[0] - b[0];
+        float dy = a[1] - b[1];
+        float dz = a[2] - b[2];
+        return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private static float FixtureHorizontalDistance(float[] a, float[] b)
+    {
+        float dx = a[0] - b[0];
+        float dz = a[2] - b[2];
+        return (float)Math.Sqrt(dx * dx + dz * dz);
+    }
+
+    // The exact acceptance-relevant measurements the live 0.6.17 line reported for the accepted
+    // candidate, so the fixture exercises the real RouteCandidatePolicy acceptance path rather than a
+    // convenient one. routeLength is supplied per candidate because the repair must prove that a
+    // better-quality entrance wins even when its route is LONGER than the extreme edge's.
+    private static RouteCandidatePolicy.Candidate FixtureCandidate(string seedLabel, float[] approach,
+        float[] qualityReference, float routeLength)
+    {
+        RouteCandidatePolicy.Candidate candidate = new RouteCandidatePolicy.Candidate();
+        candidate.StableKey = seedLabel;
+        candidate.SeedLabel = seedLabel;
+        candidate.Sampled = true;
+        candidate.Path = RouteCandidatePolicy.PathKind.Partial;
+        candidate.CornerCount = 10;
+        candidate.StartDistanceToCrossing = 196.18f;
+        candidate.EndpointDistanceToCrossing = 2.25f;
+        candidate.ApproachDistanceToCrossing = 0f;
+        candidate.RouteLength = routeLength;
+        candidate.HasApproachQuality = true;
+        candidate.ApproachQualityDistance = FixtureHorizontalDistance(approach, qualityReference);
+        candidate.ApproachQualityReferenceLabel = "routeFaceZ+";
+        return candidate;
+    }
+
+    private static CrossingSeedGeometryPolicy.EntranceProbe[] FixtureProbes(
+        out CrossingSeedGeometryPolicy.Point3 localStart)
+    {
+        // Route start well beyond the +Z face in the box's own local space: normalized Z distance
+        // dominates normalized X, so both the quality reference and the probes must choose Z+.
+        localStart = new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1.5f);
+        Require(CrossingSeedGeometryPolicy.SelectRouteFacingAxis(localStart, FixtureLocalHalf)
+                == CrossingSeedGeometryPolicy.RouteFaceAxis.ZPositive,
+            "the fixture must place the route-facing reference on the +Z face");
+        // The face's tangent is the OTHER horizontal world half axis, exactly as the planner passes it.
+        return CrossingSeedGeometryPolicy.RouteFacingEntranceProbes(localStart, FixtureLocalHalf,
+            FixtureWorldHalf[0], FixtureWorldHalf[1], FixtureSampleRadius);
+    }
+
+    private static List<RouteCandidatePolicy.Candidate> FixtureAcceptedCandidates(float[][] walkable,
+        float[] qualityReference)
+    {
+        CrossingSeedGeometryPolicy.Point3 localStart;
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = FixtureProbes(out localStart);
+        List<RouteCandidatePolicy.Candidate> candidates = new List<RouteCandidatePolicy.Candidate>();
+
+        // The lone viable extreme candidate the live run produced: the oriented -X face centre.
+        float[] extreme = FixtureToWorld(new CrossingSeedGeometryPolicy.Point3(-1f, 0f, 0f));
+        float[] extremeHit;
+        if (FixtureSample(extreme, walkable, FixtureSampleRadius, out extremeHit))
+            candidates.Add(FixtureCandidate("face1", extremeHit, qualityReference, 200f));
+
+        List<float[]> already = new List<float[]>();
+        for (int i = 0; i < probes.Length; i++)
+        {
+            float[] point = FixtureToWorld(probes[i].Offset);
+            float[] hit;
+            if (!FixtureSample(point, walkable, FixtureSampleRadius, out hit)) continue;
+            bool duplicate = false;
+            for (int d = 0; d < already.Count; d++)
+                if (FixtureHorizontalDistance(already[d], hit) <= 0.75f) duplicate = true;
+            if (duplicate) continue;
+            already.Add(hit);
+            // Deliberately LONGER than the extreme edge's route, so a pass can only come from the
+            // quality term the 0.6.17 ranking policy already applies - not from route length.
+            candidates.Add(FixtureCandidate("routeEntrance" + i, hit, qualityReference, 260f));
+        }
+        return candidates;
+    }
+
+    private static void LiveShapeClassRouteFacingProbeOutranksExtremeFace()
+    {
+        float[] qualityReference = FixtureToWorld(new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1f));
+        CrossingSeedGeometryPolicy.Point3 localStart;
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = FixtureProbes(out localStart);
+        Require(probes.Length > 3, "the repaired second stage must cover more than the 0.6.17 three points");
+        Require(probes.Length <= CrossingSeedGeometryPolicy.MaxRouteFacingEntranceProbes,
+            "second-stage probing must stay hard-bounded");
+
+        // One bounded route-facing probe that is NOT the ideal face centre: a lower-intermediate
+        // level, near-face depth, quarter tangent. This is the class of point 0.6.17 could not place.
+        int chosen = -1;
+        for (int i = 0; i < probes.Length; i++)
+            if (probes[i].Level < -0.4f && probes[i].Depth > 0.9f && probes[i].Tangent > 0.2f) chosen = i;
+        Require(chosen >= 0, "a lower-intermediate near-face tangent probe must exist for a large tall trigger");
+        float[] probeWorld = FixtureToWorld(probes[chosen].Offset);
+
+        float[] extreme = FixtureToWorld(new CrossingSeedGeometryPolicy.Point3(-1f, 0f, 0f));
+        float[][] walkable = { extreme, probeWorld };
+
+        float[] unusedHit;
+        Require(!FixtureSample(qualityReference, walkable, FixtureSampleRadius, out unusedHit),
+            "the fixture must keep the mathematically ideal face-centre sample unavailable");
+
+        List<RouteCandidatePolicy.Candidate> candidates = FixtureAcceptedCandidates(walkable, qualityReference);
+        bool hasEntrance = false;
+        bool hasExtreme = false;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            if (candidates[i].SeedLabel.StartsWith("routeEntrance", StringComparison.Ordinal)) hasEntrance = true;
+            if (candidates[i].SeedLabel == "face1") hasExtreme = true;
+        }
+        Require(hasExtreme, "the extreme face candidate must still be produced");
+        Require(hasEntrance, "a bounded route-facing probe must become a real competing candidate");
+
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(candidates);
+        Require(ranked.Count >= 2, "both the entrance probe and the extreme face must be accepted");
+        Require(ranked[0].Candidate.SeedLabel.StartsWith("routeEntrance", StringComparison.Ordinal),
+            "the route-facing entrance probe must outrank the extreme face; selected=" + ranked[0].Candidate.SeedLabel);
+        Require(ranked[0].Candidate.ApproachQualityDistance < 40.31f,
+            "the selected approach must be materially closer to the route-facing reference than the live 40.31m edge");
+    }
+
+    private static void ExtremeFaceRemainsLegalWhenEveryProbeFails()
+    {
+        float[] qualityReference = FixtureToWorld(new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1f));
+        float[] extreme = FixtureToWorld(new CrossingSeedGeometryPolicy.Point3(-1f, 0f, 0f));
+        float[][] walkable = { extreme };
+
+        List<RouteCandidatePolicy.Candidate> candidates = FixtureAcceptedCandidates(walkable, qualityReference);
+        Require(candidates.Count == 1, "only the extreme face can sample in this fixture");
+        List<RouteCandidatePolicy.Evaluation> ranked = RouteCandidatePolicy.RankAccepted(candidates);
+        Require(ranked.Count == 1 && ranked[0].Accepted && ranked[0].Candidate.SeedLabel == "face1",
+            "a lone extreme face must remain a legal accepted fallback when every route-facing probe fails");
+    }
+
+    private static void SmallTriggerSkipsRouteFacingProbing()
+    {
+        // The second stage is gated on a large footprint, exactly as in 0.6.17. A small crossing must
+        // pay no extra NavMesh work and keep its pre-existing selection.
+        RouteCandidatePolicy.Candidate candidate = FixtureCandidate("face1",
+            new[] { 0f, 0f, 0f }, new[] { 40f, 0f, 0f }, 200f);
+        RouteCandidatePolicy.Evaluation evaluation = RouteCandidatePolicy.Evaluate(candidate);
+        Require(evaluation.Accepted, "the fixture candidate must be accepted for the gate test to mean anything");
+        Require(!RouteCandidatePolicy.ShouldProbeRouteFacingEntrance(evaluation, 10f),
+            "a small trigger must never enter second-stage route-facing probing");
+        Require(RouteCandidatePolicy.ShouldProbeRouteFacingEntrance(evaluation, 40f),
+            "a large trigger with a quality-poor lone candidate must still enter second-stage probing");
+    }
+
+    private static void TallNarrowTriggerKeepsThreeTangentSteps()
+    {
+        // Tall behaviour is unchanged: the lower-intermediate level is added because the trigger is
+        // tall, but a narrow face does not earn the extra half-tangent probes.
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = CrossingSeedGeometryPolicy.RouteFacingEntranceProbes(
+            new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1.5f), FixtureLocalHalf, 10f, 20f, FixtureSampleRadius);
+        Require(!CrossingSeedGeometryPolicy.FaceNeedsWideTangentCoverage(10f, FixtureSampleRadius),
+            "a 10m half-width face is not wide enough to earn extra tangent probes");
+        bool sawLowerLevel = false;
+        for (int i = 0; i < probes.Length; i++)
+        {
+            Require(Math.Abs(probes[i].Tangent) <= 0.25f + 0.0001f,
+                "a narrow face must keep three tangent steps");
+            if (probes[i].Level < -0.4f) sawLowerLevel = true;
+        }
+        Require(sawLowerLevel, "a tall trigger must still probe the lower-intermediate vertical level");
+        Require(probes.Length == 12, "tall + narrow is two levels x two depths x three tangents; got " + probes.Length);
+    }
+
+    private static void ShortTriggerKeepsCentreLevelOnly()
+    {
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = CrossingSeedGeometryPolicy.RouteFacingEntranceProbes(
+            new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1.5f), FixtureLocalHalf, 10f, 3f, FixtureSampleRadius);
+        for (int i = 0; i < probes.Length; i++)
+            Require(Math.Abs(probes[i].Level) < 0.0001f,
+                "a short trigger must not gain a redundant lower-intermediate level");
+        Require(probes.Length == 6, "short + narrow is one level x two depths x three tangents; got " + probes.Length);
+    }
+
+    private static void RotatedTriggerProbesStayInsideNormalizedBox()
+    {
+        // Probes are normalized LOCAL offsets, so rotation and non-uniform scale are handled entirely
+        // by the caller's BoxCollider transform. Staying strictly inside [-1,+1] is what makes that
+        // safe for a rotated trigger: no probe can ever land outside the real volume.
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = CrossingSeedGeometryPolicy.RouteFacingEntranceProbes(
+            new CrossingSeedGeometryPolicy.Point3(-2f, 0f, 0.1f), FixtureLocalHalf, 40f, 20f, FixtureSampleRadius);
+        Require(probes.Length > 0 && probes.Length <= CrossingSeedGeometryPolicy.MaxRouteFacingEntranceProbes,
+            "probe count must stay bounded");
+        for (int i = 0; i < probes.Length; i++)
+        {
+            CrossingSeedGeometryPolicy.Point3 o = probes[i].Offset;
+            Require(Math.Abs(o.X) < 1f && Math.Abs(o.Y) < 1f && Math.Abs(o.Z) < 1f,
+                "every probe must stay strictly inside the oriented box");
+            Require(o.X < 0f, "a route start beyond the -X face must be probed on the -X face");
+        }
+    }
+
+    private static void RouteFacingProbesCoverTheQualityReferenceFace()
+    {
+        // The 0.6.17 mismatch in one assertion: quality was measured against routeFaceZ+ while the only
+        // sampled candidate sat on the -X face. The probes and the quality reference must agree on the
+        // face, or second-stage probing cannot improve the quality metric by construction.
+        CrossingSeedGeometryPolicy.Point3 localStart = new CrossingSeedGeometryPolicy.Point3(0f, 0f, 1.5f);
+        CrossingSeedGeometryPolicy.RouteFaceAxis axis =
+            CrossingSeedGeometryPolicy.SelectRouteFacingAxis(localStart, FixtureLocalHalf);
+        Require(CrossingSeedGeometryPolicy.RouteFaceLabel(axis) == "routeFaceZ+",
+            "the shared helper must label the fixture's route-facing face routeFaceZ+");
+        CrossingSeedGeometryPolicy.EntranceProbe[] probes = CrossingSeedGeometryPolicy.RouteFacingEntranceProbes(
+            localStart, FixtureLocalHalf, FixtureWorldHalf[0], FixtureWorldHalf[1], FixtureSampleRadius);
+        for (int i = 0; i < probes.Length; i++)
+            Require(probes[i].Offset.Z > 0f, "every probe must sit on the same face the quality reference uses");
     }
 
     private static void Run(string name, Action test)

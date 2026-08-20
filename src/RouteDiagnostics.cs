@@ -13,6 +13,7 @@ namespace ErenshorFollow
             string query = requested == null ? string.Empty : requested.Trim();
             Say("[Erenshor Route Diag] Scene: " + Safe(SceneManager.GetActiveScene().name));
             Say("[Erenshor Route Diag] Requested: " + (query.Length == 0 ? "<missing>" : query));
+            Say("[Erenshor Route Diag] Active selected current-leg: " + LeaderController.DescribeSelectedRouteDiagnostic());
             if (query.Length == 0)
             {
                 Say("[Erenshor Route Diag] Usage: /elead diag <destination zone>");
@@ -78,7 +79,18 @@ namespace ErenshorFollow
                 for (int c = 0; c < inspection.ColliderInfo.Count; c++)
                     Say("[Erenshor Route Diag]   collider: " + inspection.ColliderInfo[c]);
                 Say("[Erenshor Route Diag]   NavMesh sample=" + (inspection.SampledApproachCount > 0 ? "success" : "failed") +
-                    " | sampled approaches=" + inspection.SampledApproachCount + " | " + DescribeBest(inspection));
+                    " | sampled approaches=" + inspection.SampledApproachCount +
+                    " | primarySeeds=" + inspection.PrimarySeedCount +
+                    " primarySamples=" + inspection.PrimarySampleCount +
+                    " intermediateEnabled=" + inspection.IntermediateEnabled +
+                    " midApproachGenerated=" + inspection.MidApproachGenerated +
+                    " fallbackTriggered=" + inspection.FallbackTriggered +
+                    " fallbackSeedsAdded=" + inspection.FallbackSeedsAdded +
+                    " fallbackSamples=" + inspection.FallbackSampleCount +
+                    " localHalf=" + (string.IsNullOrEmpty(inspection.LocalHalf) ? "n/a" : inspection.LocalHalf) +
+                    " worldHalf=" + (string.IsNullOrEmpty(inspection.WorldHalf) ? "n/a" : inspection.WorldHalf) +
+                    " accepted=" + inspection.AcceptedOptions.Count +
+                    " | " + DescribeBest(inspection));
             }
 
             if (plan.Options.Count == 0)

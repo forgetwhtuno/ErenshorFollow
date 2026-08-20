@@ -1,4 +1,4 @@
-# Erenshor Follow 0.6.15
+# Erenshor Follow 0.6.22
 
 Part of the **Forgotten Roads for Erenshor** mod collection.
 

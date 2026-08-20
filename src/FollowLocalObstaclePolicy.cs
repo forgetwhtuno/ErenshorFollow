@@ -23,6 +23,26 @@ namespace ErenshorFollow
         Sidestep
     }
 
+    internal enum FollowSidestepChoice
+    {
+        None,
+        Left,
+        Right
+    }
+
+    // Runtime supplies the bounded NavMesh evidence for each side; this pure record keeps the choice
+    // deterministic and testable without UnityEngine.
+    internal sealed class FollowSidestepCandidate
+    {
+        internal bool Sampled;
+        internal bool PathValid;
+        internal bool ContinuationValid;
+        internal float Progress;
+        internal float CombinedRouteLength;
+        internal float TieBreakX;
+        internal float TieBreakZ;
+    }
+
     // Ordinary formation vs. how urgently the player needs to close ground on the leader. Purely a
     // classification of measured leader distance; FormationSpeedMultiplier is the only thing this feeds
     // into runtime movement, and it is always applied on top of the player's own native run speed, never
@@ -158,11 +178,63 @@ namespace ErenshorFollow
             float len = (float)Math.Sqrt(lenSq);
             float nx = dirX / len;
             float nz = dirZ / len;
-            // Perpendicular to (dirX, dirZ) in the XZ plane is (dirZ, -dirX) and its negation.
-            leftX = fromX + nz * radius;
-            leftZ = fromZ - nx * radius;
-            rightX = fromX - nz * radius;
-            rightZ = fromZ + nx * radius;
+            // In Unity's X/Z plane, Vector3.up x forward is the camera/actor's LEFT. For a
+            // +Z heading that is -X; keep the labels faithful to the actual handedness.
+            leftX = fromX - nz * radius;
+            leftZ = fromZ + nx * radius;
+            rightX = fromX + nz * radius;
+            rightZ = fromZ - nx * radius;
+        }
+
+        internal static FollowSidestepChoice ChooseSidestep(FollowSidestepCandidate left,
+            FollowSidestepCandidate right)
+        {
+            bool leftUsable = IsUsableSidestep(left);
+            bool rightUsable = IsUsableSidestep(right);
+            if (!leftUsable && !rightUsable) return FollowSidestepChoice.None;
+            if (leftUsable && !rightUsable) return FollowSidestepChoice.Left;
+            if (rightUsable && !leftUsable) return FollowSidestepChoice.Right;
+
+            // A continuation that can actually reach the current trailing target is stronger
+            // evidence than a side-step that merely lands on NavMesh.
+            if (left.ContinuationValid != right.ContinuationValid)
+                return left.ContinuationValid ? FollowSidestepChoice.Left : FollowSidestepChoice.Right;
+
+            int progress = CompareDescending(left.Progress, right.Progress, 0.05f);
+            if (progress != 0) return progress < 0 ? FollowSidestepChoice.Left : FollowSidestepChoice.Right;
+
+            int route = CompareAscending(left.CombinedRouteLength, right.CombinedRouteLength, 0.05f);
+            if (route != 0) return route < 0 ? FollowSidestepChoice.Left : FollowSidestepChoice.Right;
+
+            // Neutral deterministic tie-break: world position, never candidate enumeration order.
+            int x = CompareAscending(left.TieBreakX, right.TieBreakX, 0.001f);
+            if (x != 0) return x < 0 ? FollowSidestepChoice.Left : FollowSidestepChoice.Right;
+            int z = CompareAscending(left.TieBreakZ, right.TieBreakZ, 0.001f);
+            if (z != 0) return z < 0 ? FollowSidestepChoice.Left : FollowSidestepChoice.Right;
+            return FollowSidestepChoice.Left;
+        }
+
+        private static bool IsUsableSidestep(FollowSidestepCandidate candidate)
+        {
+            return candidate != null && candidate.Sampled && candidate.PathValid;
+        }
+
+        private static int CompareAscending(float left, float right, float epsilon)
+        {
+            bool leftFinite = !float.IsNaN(left) && !float.IsInfinity(left);
+            bool rightFinite = !float.IsNaN(right) && !float.IsInfinity(right);
+            if (!leftFinite || !rightFinite)
+            {
+                if (leftFinite != rightFinite) return leftFinite ? -1 : 1;
+                return 0;
+            }
+            if (Math.Abs(left - right) <= epsilon) return 0;
+            return left < right ? -1 : 1;
+        }
+
+        private static int CompareDescending(float left, float right, float epsilon)
+        {
+            return -CompareAscending(left, right, epsilon);
         }
     }
 }

@@ -16,7 +16,7 @@ namespace ErenshorFollow
     {
         internal const string PluginGuid = "forgetwhtuno.erenshor.follow";
         internal const string PluginName = "Erenshor Follow";
-        internal const string PluginVersion = "0.6.15";
+        internal const string PluginVersion = "0.6.22";
         internal static ErenshorFollowPlugin Instance;
         internal static bool VerboseDiagnostics { get; private set; }
 
@@ -412,6 +412,7 @@ namespace ErenshorFollow
                 Chat(ZoneAtlasRoutePlanner.DescribeDiscovery(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name,
                     ExpeditionDestinationResolver.ListCanonicalNames()), "lightblue");
                 Chat(LeaderController.MovementDiagnostics(), "lightblue");
+                Chat("[Erenshor Expedition] selected-route: " + LeaderController.DescribeSelectedRouteDiagnostic(), "lightblue");
                 return;
             }
             if (value.Equals("pause", StringComparison.OrdinalIgnoreCase) || value.Equals("hold", StringComparison.OrdinalIgnoreCase))

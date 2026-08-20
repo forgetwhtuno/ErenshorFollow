@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.6.22 - world-scale intermediate crossing probes
+
+- Separates authoritative local BoxCollider OBB construction from world-metre intermediate-height classification, restoring lower-mid discovery for heavily scaled tall triggers such as Hidden.
+- Adds exact live Hidden geometry coverage for localSize=(1,1,1), rotationY=40.27, and lossyScale=(80,47.11,10), plus bounded `/elead diag` stage/geometry fields.
+- Keeps the 30-primary/8-fallback budget, centerline ranking, route-facing probes, native zoning, and diagnostic-only egress behavior unchanged.
+
+## 0.6.21 - Hidden discovery budget recovery and centered crossing selection
+
+- Restores the historical 30-seed primary crossing discovery budget and reserves all eight
+  zero-sample `midRing0..midRing7` fallback slots used by tall/large Hidden-style triggers.
+- Removes the duplicate primary `centerFace` seed; centered crossing behavior remains a ranking
+  preference through the oriented face centerline and bounded route-facing probes.
+- Adds primary/fallback stage diagnostics while keeping authored egress POIs diagnostic-only and
+  native Zoneline traversal authoritative.
+
+## 0.6.19 - live-zoneline world-route reconciliation
+
+- Reconciles current-scene eligible native Zonelines into the runtime route graph, so a live direct exit remains executable when the authored atlas omits that edge.
+- Keeps EgressLocations and zoneline POIs optional authored navigation hints; they do not gate world adjacency.
+- Adds concise route-reconciliation diagnostics while preserving native crossing, DoGuard ownership, and order-proof behavior.
+
+## 0.6.18 - large-trigger route-facing sampling repair
+
+- Live 0.6.17 proved the second-stage entrance probe could not help on a large trigger: it produced
+  only three points, all at the collider's centre height and one inward depth, and recorded nothing
+  about them. The bounded route-facing probe set is now derived from the live BoxCollider - same face
+  the approach-quality reference uses, two inward depths, bounded tangent steps, and the
+  lower-intermediate vertical level when the trigger is tall enough for it to differ from centre.
+- The approach-quality reference and the entrance probes now share one face-selection helper, so the
+  probes always cover the face quality is measured against.
+- Adds bounded event-boundary forensics for every second-stage probe: label, unsampled world position,
+  sample radius, local normalized offset, world Y, distance to the collider volume, quality reference,
+  NavMesh.SamplePosition outcome, sampled hit, and CalculatePath status - plus the authoritative
+  BoxCollider centre/size/lossyScale/rotation, oriented world half axes, and the route start in the
+  collider's own local space. No per-frame diagnostics.
+- The reported generated-seed count now includes the second-stage probes.
+- Ranking policy, acceptance distances, sample radii, small/tall/rotated trigger seeding, and the
+  0.6.16 bilateral sidestep behaviour are unchanged.
+
+## 0.6.17 - large-zoneline entrance quality repair
+
+- Preserves the 0.6.16 bilateral sidestep selection and recovery behavior unchanged.
+- A lone accepted quality-poor edge on a large trigger now gets a bounded route-facing interior entrance probe before final ranking; existing NavMesh, path, and acceptance gates remain required.
+- `/expedition diag` exposes the selected current-leg seed, approach, quality reference, quality score, route length, and reason with verbose diagnostics off.
+
+## 0.6.16 - live navigation quality repair
+
+- Evaluates both bounded lateral obstacle-recovery candidates before choosing the side with the
+  stronger continuation evidence; Unity X/Z handedness labels now match the actual left/right sides.
+- Adds bounded large-Zoneline approach-quality ranking so a natural route-facing/interior approach
+  outranks an opposite extreme trigger edge when both are otherwise safe, while preserving the edge as
+  a fallback when it is the only viable route.
+- Adds bounded sidestep and crossing-quality diagnostics for sampled/path/continuation scores, seed
+  labels, raw/candidate geometry, and ranking reason.
+- No change to exact Sim identity, native zoning, expedition authority, or state-machine ownership.
+
 ## 0.6.15 - final release candidate identity
 
 - Carries the live-proven 0.6.14 navigation behavior forward unchanged.

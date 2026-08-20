@@ -29,6 +29,7 @@ $leader = Read-RepoFile "src\LeaderController.cs"
 $follow = Read-RepoFile "src\FollowController.cs"
 $layout = Read-RepoFile "src\SimActionMenuLayoutPolicy.cs"
 $planner = Read-RepoFile "src\LocalZoneRoutePlanner.cs"
+$candidatePolicy = Read-RepoFile "src\RouteCandidatePolicy.cs"
 $crossingPolicy = Read-RepoFile "src\ExpeditionCrossingPolicy.cs"
 $crossingObserver = Read-RepoFile "src\ZonelineTriggerObserver.cs"
 $doGuardPatch = Read-RepoFile "src\ExpeditionDoGuardPatch.cs"
@@ -80,7 +81,7 @@ Assert-Contains $simActions 'SimActionMenuLayoutPolicy.ResolvePanelHeight' "Sim 
 Assert-Contains $simActions 'layout.childControlHeight = true;' "Sim Actions layout group owns row heights instead of default RectTransform heights"
 Assert-Contains $simActions 'element.flexibleHeight = 0f;' "Sim Actions rows cannot absorb unused viewport height"
 Assert-Contains $simActions 'DiagnosticStatus()' "Sim Actions exposes an explicit custom-vs-native UI diagnostic"
-Assert-Contains $plugin 'PluginVersion = "0.6.15"' "Follow release version identifies the zero-sample inner-ring repair candidate"
+Assert-Contains $plugin 'PluginVersion = "0.6.22"' "Follow release version identifies the world-scale intermediate probe repair"
 Assert-Contains $leader 'if (releasePriorState) _leader.FreeFollow();' "expedition releases selected Sim guard/rest posture before travel"
 Assert-Contains $leader '_leader.AssignGuardSpot(target);' "expedition assigns the selected Sim travel target"
 Assert-Contains $leader 'sim.GetThisNPC()' "expedition resolves the selected Sim native NPC movement owner"
@@ -119,7 +120,8 @@ Assert-NotContains $follow 'player.transform.position =' "player follow never as
 Assert-Contains $follow 'FollowStuckRecoveryPolicy.Evaluate(' "the existing bounded stuck-recovery timeout still gates genuine expedition failure"
 Assert-Contains $follow 'FollowLocalObstaclePolicy.Classify(' "player follow classifies why it stalled before choosing a repath strategy"
 Assert-Contains $follow 'FollowLocalObstaclePolicy.ChooseStrategy(' "player follow picks a bounded repath strategy from the stall classification"
-Assert-Contains $follow 'TrySidestepWaypoint' "a physically blocked player gets a bounded local side-step probe before an ordinary repath"
+Assert-Contains $follow 'ProbeSidestepWaypoint' "a physically blocked player evaluates bounded local side-step probes before an ordinary repath"
+Assert-Contains $follow 'FollowLocalObstaclePolicy.ChooseSidestep(' "both bounded side-step candidates are compared before selection"
 # #3: trailing point, not the leader's exact transform.
 Assert-Contains $follow 'FollowLocalObstaclePolicy.TrailingTarget(' "player follow targets a trailing point behind the leader, not its exact position"
 # #8: crossing acceptance/geometry policy files are untouched by this pass - same proven markers as the
@@ -325,7 +327,15 @@ Assert-Contains $planner 'localCenter = box.center;' "oriented seeds include an 
 Assert-Contains $planner 'Vector3 size = box.size;' "oriented seeds use BoxCollider local size rather than world AABB extents"
 Assert-Contains $planner 'LowerIntermediateInteriorOffsets()' "planner emits the bounded lower-mid interior layer for sufficiently tall triggers"
 Assert-Contains $planner 'LowerIntermediateApproachFaceOffsets' "planner combines route-facing horizontal surface position with intermediate height"
-Assert-Contains $planner 'MaxSeedsPerCrossing = 38' "seed budget reserves eight zero-sample fallback slots and remains fixed/bounded"
+Assert-Contains $planner 'Vector3 worldHalf = new Vector3' "intermediate classification derives a separate world-scale half extent"
+Assert-Contains $planner 'worldHalfPoint' "intermediate threshold uses world metres rather than local box units"
+Assert-Contains $planner 'MidApproachGenerated' "midApproach generation is explicitly diagnosable"
+Assert-Contains $planner 'CrossingSeedBudgetPolicy.MaxSeedsPerCrossing' "planner uses the fixed pure seed budget contract"
+Assert-NotContains $planner '"centerFace"' "primary OBB discovery does not consume a duplicate centerFace seed"
+$seedBudget = Get-Content (Join-Path $repoRoot "src\CrossingSeedBudgetPolicy.cs") -Raw
+Assert-Contains $seedBudget 'MaxSeedsPerCrossing = 38' "pure production seed budget remains fixed at 38"
+Assert-Contains $seedBudget 'PrimarySeedBudget = 30' "pure production primary discovery budget remains thirty"
+Assert-Contains $seedBudget 'ZeroSampleFallbackBudget = 8' "pure production zero-sample fallback reserves eight slots"
 Assert-Contains $planner 'localCenter=' "failure diagnostics expose authoritative BoxCollider local centre"
 Assert-Contains $planner 'localSize=' "failure diagnostics expose authoritative BoxCollider local size"
 Assert-Contains $planner 'Build(start, crossings, ErenshorFollowPlugin.VerboseDiagnostics)' "ordinary planning only records per-seed forensics when verbose diagnostics are enabled"
@@ -342,11 +352,132 @@ Assert-Contains $leader 'ErenshorFollowPlugin.VerboseDiagnostics' "zero-candidat
 Assert-Contains $plugin 'if (!VerboseDiagnostics) return;' "Follow LogDebug centrally suppresses forensic I/O when Diagnostics/Verbose is off"
 
 # The seed budget is retained (only resized) and sample radii are NOT globally widened.
-Assert-Contains $planner 'private const int MaxSeedsPerCrossing' "the seed budget still exists"
+Assert-Contains $planner 'MaxSeedsPerCrossing =' "the seed budget still exists"
 Assert-Contains $planner 'private const float FloorSeedRadius = 4f;' "seed sample radius is unchanged - the fix is filtering, not wider sampling"
 Assert-Contains $planner 'private const int MaxApproachesPerCrossing = 6;' "the sampled-approach budget is unchanged"
 
-Write-Host "Erenshor Follow 0.6.15 zoneline crossing static guards: PASS" -ForegroundColor Green
+# 0.6.18 live Vitheo repair: the second stage ran but could only ever place three centre-height
+# points on one depth, and recorded nothing, so a lone quality-poor edge stayed selected by default.
+Assert-Contains $seedPolicy 'RouteFacingEntranceProbes' "bounded route-facing entrance probe geometry exists"
+Assert-Contains $seedPolicy 'SelectRouteFacingAxis' "one shared helper picks the route-facing face"
+Assert-Contains $seedPolicy 'FaceNeedsWideTangentCoverage' "extra tangent probes are earned by real face width, not assumed"
+Assert-Contains $seedPolicy 'MaxRouteFacingEntranceProbes = 16' "second-stage probing stays hard-bounded"
+Assert-NotContains $seedPolicy 'RouteFacingEntranceOffsets' "the centre-height-only 0.6.17 entrance band must not come back"
+Assert-Contains $planner 'CrossingSeedGeometryPolicy.SelectRouteFacingAxis' "the quality reference and the entrance probes name the same face"
+Assert-Contains $planner 'RouteFacingEntranceProbes' "the planner probes the route-facing face from live collider geometry"
+Assert-Contains $planner 'internal sealed class RouteFacingProbeDiagnostic' "second-stage probes are individually diagnosable"
+foreach ($field in @('UnsampledPosition','LocalNormalizedOffset','WorldY','DistanceToColliderVolume','QualityReferenceLabel','SampleHit','PathStatus')) {
+    Assert-Contains $planner $field "route-facing probe diagnostic records $field"
+}
+foreach ($field in @('routeFacingProbes=','routeFacingQualityRef=','localOffset=','worldY=')) {
+    Assert-Contains $planner $field "route-facing probe diagnostic emits $field"
+}
+Assert-Contains $planner 'worldHalfAxes=' "second-stage forensics expose the oriented world half axes"
+Assert-Contains $planner 'localStart=' "second-stage forensics expose the route start in collider local space"
+Assert-Contains $planner 'inspection.GeneratedSeedCount = generatedSeedCount;' "the reported seed count includes the second-stage probes"
+Assert-Contains $planner 'rankingReason=lowest-accepted-quality-then-route' "0.6.17 ranking policy is retained unchanged"
+
+# ---- Read-only native egress-POI diagnostic (/elead egress) --------------------------------------
+# This pass may ONLY observe. It exists to prove whether authored PointOfInterest entries with
+# Use == POIType.zoneline can serve as Expedition crossing targets; it must not change routing,
+# movement ownership, Sim task/POI state, grouping, or scene state in any way.
+$egressDiag = Read-RepoFile "src\EgressPoiDiagnostics.cs"
+$egressPolicy = Read-RepoFile "src\EgressAssociationPolicy.cs"
+
+Assert-Contains $egressDiag 'internal static void Report()' "the egress diagnostic has an explicit, command-driven entry point"
+Assert-Contains $egressDiag '"/elead egress"' "the egress diagnostic is reachable only from an explicit typed command"
+Assert-Contains $egressDiag 'READ-ONLY' "the egress diagnostic states its read-only contract in source"
+
+# Read-only proof: the diagnostic must never write Sim activity/travel state.
+foreach ($forbidden in @('MyPOI =', 'MyTask =', 'MyPOI=', 'MyTask=', '.Flee(', 'RunAway(', '.ZoneSim(',
+                         'ChangeScene', 'ChangeSceneSafe', '.Warp(', 'AssignGuardSpot', 'FreeFollow',
+                         'HighPriorityNavUpdate', 'SetDestination', 'isStopped =', '.speed =',
+                         'InviteToGroup', 'ForceDismissFromGroup', 'TravelToZone', 'SpawnMeInGame',
+                         'BringSimToPlayer', 'SimChangeScene', 'transform.position =')) {
+    Assert-NotContains $egressDiag $forbidden "the egress diagnostic never calls or assigns $forbidden"
+}
+
+# No per-frame work: an observation pass must not install an Update/coroutine surface.
+foreach ($forbidden in @('void Update(', 'void FixedUpdate(', 'void LateUpdate(', 'StartCoroutine',
+                         'MonoBehaviour')) {
+    Assert-NotContains $egressDiag $forbidden "the egress diagnostic adds no per-frame surface ($forbidden)"
+}
+
+# The whole point of the pass: association is measured against the real collider VOLUME, and the
+# raw transform distance is retained only as a clearly separate secondary diagnostic.
+Assert-Contains $egressDiag 'collider.ClosestPoint(point)' "POI/crossing association uses the live collider volume"
+Assert-Contains $egressDiag 'private static float MeasureToVolume' "volume distance is its own explicit measurement"
+Assert-Contains $egressDiag 'candidate.RawDistance = crossing.transform == null' "raw transform distance is measured separately"
+Assert-Contains $egressDiag ' dVol=' "the report emits the collider-volume distance"
+Assert-Contains $egressDiag ' dRaw=' "the report emits the raw-centre distance as a distinct field"
+Assert-Contains $egressPolicy 'internal static int CompareCandidates(bool aInside, float aVolumeDistance, string aKey,' "association ordering cannot even see raw-centre distance"
+Assert-Contains $egressPolicy 'NativeSampleRadius = 2f' "the diagnostic reports the NATIVE 2m acceptance, not Follow's wider radius"
+Assert-Contains $egressPolicy 'NativeVerticalTolerance = 0.25f' "native vertical tolerance mirrors GameData.GetSafeNavMeshPoint"
+Assert-Contains $egressDiag 'MaxPoisReported = 24' "egress enumeration is bounded"
+Assert-Contains $egressDiag 'MaxZonelinesReported = 12' "crossing enumeration is bounded"
+
+# First-leg admission uses graph/live-edge resolution only. Authored egress POIs remain diagnostic
+# evidence and never participate in normal route selection or scene-local admission.
+Assert-Contains $plugin 'PluginVersion = "0.6.22"' "the world-scale intermediate probe repair retains the reconciled runtime route version"
+Assert-Contains $planner 'RouteFacingEntranceProbes' "the 0.6.18 planner is untouched by the diagnostic pass"
+Assert-Contains $planner 'rankingReason=lowest-accepted-quality-then-route' "ranking is untouched by the diagnostic pass"
+Assert-NotContains $planner 'GameData.EgressLocations' "authored egress remains diagnostic-only"
+Assert-NotContains $planner 'PointOfInterest.POIType.zoneline' "normal routing does not consume authored egress POIs"
+Assert-Contains $planner 'selectedSeed=' "selected local approach remains diagnosable"
+Assert-Contains $planner 'primarySeeds=' "crossing diagnostics report the primary discovery count"
+Assert-Contains $planner 'primarySamples=' "crossing diagnostics report primary NavMesh samples"
+Assert-Contains $planner 'fallbackTriggered=' "crossing diagnostics report fallback activation"
+Assert-Contains $planner 'fallbackSeedsAdded=' "crossing diagnostics report fallback seed count"
+Assert-Contains $planner 'fallbackSamples=' "crossing diagnostics report fallback NavMesh samples"
+Assert-Contains $planner 'selectedReason=' "selected crossing diagnostics report the ranking reason"
+
+# ---- 0.6.19 current-scene live-edge overlay ------------------------------------------------------
+$worldRoutePolicy = Read-RepoFile "src\ZoneRouteGraphPolicy.cs"
+Assert-Contains $worldRoutePolicy 'BuildRuntimeGraph' "runtime route graph overlays current-scene live crossings"
+Assert-Contains $worldRoutePolicy 'liveCurrentSceneEdges' "live edges are explicit policy input, not hidden atlas state"
+Assert-Contains $worldRoutePolicy 'AddUnique(runtime[start], edge)' "eligible live exits become deduplicated outgoing runtime edges"
+Assert-Contains $worldRoutePolicy 'start.Equals(edge' "self live edges cannot create route progress"
+Assert-Contains $route 'runtimeOutgoing=' "expedition diagnostics expose reconciled runtime outgoing edges"
+Assert-Contains $route 'liveHop=' "expedition diagnostics explain every current live first hop"
+Assert-Contains $route 'egressPOIs=optional' "egress POIs remain optional hints rather than adjacency gates"
+Assert-NotContains $worldRoutePolicy 'EgressLocations' "route graph never requires optional egress metadata"
+foreach ($forbidden in @('void Update(', 'void FixedUpdate(', 'void LateUpdate(', 'StartCoroutine', 'MonoBehaviour')) {
+    Assert-NotContains $worldRoutePolicy $forbidden "route reconciliation introduces no polling loop ($forbidden)"
+}
+
+# ---- Read-only planner -> mover order-proof diagnostic ------------------------------------------
+$orderProof = Read-RepoFile "src\ExpeditionOrderProofDiagnostic.cs"
+$orderProofPolicy = Read-RepoFile "src\ExpeditionOrderProofPolicy.cs"
+Assert-Contains $leader 'ExpeditionOrderProofDiagnostic.Begin' "every existing zone-order attempt starts an order-proof record"
+Assert-Contains $leader 'ExpeditionOrderProofDiagnostic.ProbeMover' "the proof straddles the native movement handoff"
+Assert-Contains $leader 'ExpeditionOrderProofDiagnostic.Complete' "every order outcome is recorded"
+Assert-Contains $orderProof 'MoverSampleRadius = 2f' "mover proof uses the installed native 2m target sample radius"
+Assert-Contains $orderProof 'NavMesh.SamplePosition(target, out targetHit, MoverSampleRadius' "mover proof samples the actual intended target"
+Assert-Contains $orderProof 'NavMesh.CalculatePath(npc.transform.position, targetHit.position' "mover proof calculates a read-only path from the native NPC origin"
+Assert-Contains $orderProof 'mover_path_partial_complete_required' "partial mover evidence has a deterministic reason code"
+Assert-Contains $orderProofPolicy '[Expedition order proof]' "order proof has one consistent live-log prefix"
+foreach ($field in @('session=', 'crossingKey=', 'plannerPath=', 'movementOwnershipBefore=',
+                         'mover2mSample=', 'moverPath=', 'orderAttempted=', 'orderIssued=', 'failureReason=')) {
+    Assert-Contains $orderProofPolicy $field "order proof emits $field"
+}
+foreach ($forbidden in @('AssignGuardSpot', 'FreeFollow', 'HighPriorityNavUpdate', 'SetDestination', 'isStopped =',
+                         '.speed =', 'transform.position =', 'MyPOI =', 'MyTask =', 'Flee(', 'RunAway(', 'ZoneSim(',
+                         'ChangeScene', 'Warp(', 'TravelToZone', 'SpawnMeInGame', 'BringSimToPlayer', 'SimChangeScene',
+                         'InviteToGroup', 'ForceDismissFromGroup')) {
+    Assert-NotContains $orderProof $forbidden "order proof never changes gameplay through $forbidden"
+}
+foreach ($forbidden in @('void Update(', 'void FixedUpdate(', 'void LateUpdate(', 'StartCoroutine', 'MonoBehaviour')) {
+    Assert-NotContains $orderProof $forbidden "order proof introduces no polling loop ($forbidden)"
+}
+
+# Expedition DoGuard suppression must remain exactly as shipped - the diagnostic pass does not
+# re-enable native DoGuard for the expedition leader.
+Assert-Contains $doGuardPatch 'LeaderController.ShouldSuppressNativeDoGuard(__instance)' "expedition DoGuard suppression is retained"
+Assert-Contains $ownershipPolicy 'input.ExpeditionActive && input.ExactLeader && input.TravelMovementOwned' "DoGuard suppression still requires exact leader + owned travel"
+
+Write-Host "Erenshor Follow read-only egress-POI diagnostic guards: PASS" -ForegroundColor Green
+
+Write-Host "Erenshor Follow 0.6.22 zoneline crossing static guards: PASS" -ForegroundColor Green
 
 # UI workspace normalization pass: compact status box + shared right-side default workspace,
 # without changing Initialize's positional call site (see StandaloneFallbackUi.cs comment on why).
